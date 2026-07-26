@@ -20,7 +20,7 @@
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
   <script type="text/babel">
-    const { useState, useCallback, useMemo } = React;
+    const { useState, useCallback, useMemo, useEffect } = React;
 
     // ============================================================================
     // DOMAIN LAYER - Бизнес-логика
@@ -69,28 +69,181 @@
       }
     }
 
-    class PriceService {
+    /**
+     * Сервис получения цен через ISS API Московской биржи.
+     *
+     * Автоматически определяет рынок (акции, ETF, облигации и т.д.)
+     * и режим торгов (доску) для каждого актива, извлекает цену последней
+     * сделки (LAST).
+     *
+     * ISS API: https://iss.moex.com/iss/
+     * Поддерживает CORS, не требует авторизации.
+     */
+    class MoexPriceService {
+      /** Базовый URL ISS API */
+      static ISS_URL = 'https://iss.moex.com/iss';
+
+      /**
+       * Рынки для поиска актива в порядке приоритета.
+       * Каждый рынок проверяется последовательно, пока не найдётся цена.
+       */
+      static MARKETS = [
+        { engine: 'stock', market: 'shares' },        // Акции
+        { engine: 'stock', market: 'etf' },            // ETF / ПИФы
+        { engine: 'stock', market: 'bonds' },          // Облигации
+        { engine: 'stock', market: 'foreignshares' },  // Иностранные акции
+        { engine: 'stock', market: 'depositaryreceipts' }, // Депозитарные расписки
+      ];
+
+      /**
+       * Приоритет досок для выбора цены внутри одного рынка.
+       * TQBR — основной режим акций
+       * TQTF — ETF / ПИФы
+       * TQOB — облигации
+       * TQTD — депозитарные расписки
+       * TQPI — паи
+       * SMAL — малые предприятия (SME)
+       */
+      static BOARD_PRIORITY = ['TQBR', 'TQTF', 'TQOB', 'TQTD', 'TQPI', 'SMAL', 'CETS'];
+
+      /**
+       * Получить текущую цену актива по тикеру.
+       *
+       * Алгоритм:
+       * 1. Перебирает рынки (акции → ETF → облигации → ...)
+       * 2. Для каждого рынка запрашивает marketdata и securities через ISS API
+       * 3. Ищет доску с ценой LAST в порядке приоритета BOARD_PRIORITY
+       * 4. Если LAST недоступен — использует MARKETPRICE (рыночная цена)
+       * 5. Если MARKETPRICE недоступен — использует LCLOSEPRICE (цена закрытия предыдущей сессии)
+       * 6. Если LCLOSEPRICE недоступен — использует PREVPRICE из securities (предыдущая цена закрытия)
+       * 7. Если ни одна приоритетная доска не найдена — берёт первую строку с ценой
+       *
+       * @param {string} ticker - Тикер актива (например 'SBER')
+       * @returns {Promise<number>} Цена актива
+       * @throws {Error} Если цена не найдена ни на одном рынке
+       */
       static async fetchPrice(ticker) {
-        await new Promise(resolve => setTimeout(resolve, 300));
-        const prices = {
-          'SBER': 245.50,
-          'GAZP': 145.20,
-          'NVTK': 1234.50,
-          'POLY': 96.80,
-          'TATN': 89.40,
-          'MGNT': 3245.00,
-          'MOEX': 156.75,
-          'IRAO': 0.5130,
-        };
-        if (prices[ticker.toUpperCase()]) {
-          const noise = (Math.random() - 0.5) * prices[ticker.toUpperCase()] * 0.02;
-          return prices[ticker.toUpperCase()] + noise;
+        const tickerUpper = ticker.toUpperCase();
+        let lastError = null;
+
+        // Перебираем рынки в порядке приоритета
+        for (const { engine, market } of this.MARKETS) {
+          try {
+            const url = `${this.ISS_URL}/engines/${engine}/markets/${market}/securities/${tickerUpper}.json?iss.meta=off`;
+
+            const response = await fetch(url, {
+              signal: AbortSignal.timeout(5000),
+            });
+
+            // 404 = актив не найден на этом рынке, пробуем следующий
+            if (response.status === 404) continue;
+            if (!response.ok) {
+              lastError = new Error(`HTTP ${response.status}`);
+              continue;
+            }
+
+            const data = await response.json();
+            const marketdata = data.marketdata;
+            const securities = data.securities;
+
+            if (!marketdata?.data?.length) continue;
+
+            const columns = marketdata.columns;
+            const boardIdx = columns.indexOf('BOARDID');
+            const lastIdx = columns.indexOf('LAST');
+            const marketPriceIdx = columns.indexOf('MARKETPRICE');
+            const lclosePriceIdx = columns.indexOf('LCLOSEPRICE');
+
+            if (boardIdx === -1 || lastIdx === -1) continue;
+
+            // 1. Ищем подходящую доску по приоритету
+            for (const board of this.BOARD_PRIORITY) {
+              const row = marketdata.data.find(r => r[boardIdx] === board);
+              if (!row) continue;
+
+              // 1a. LAST — цена последней сделки
+              if (row[lastIdx] && parseFloat(row[lastIdx]) > 0) {
+                return parseFloat(row[lastIdx]);
+              }
+
+              // 1b. MARKETPRICE — рыночная цена (доступна даже в нерабочие дни)
+              if (marketPriceIdx !== -1 && row[marketPriceIdx] && parseFloat(row[marketPriceIdx]) > 0) {
+                return parseFloat(row[marketPriceIdx]);
+              }
+
+              // 1c. LCLOSEPRICE — цена закрытия предыдущей сессии
+              if (lclosePriceIdx !== -1 && row[lclosePriceIdx] && parseFloat(row[lclosePriceIdx]) > 0) {
+                return parseFloat(row[lclosePriceIdx]);
+              }
+            }
+
+            // 2. Если не нашли по приоритету — берём первую строку с ценой
+            for (const row of marketdata.data) {
+              // 2a. LAST
+              if (row[lastIdx] && parseFloat(row[lastIdx]) > 0) {
+                return parseFloat(row[lastIdx]);
+              }
+
+              // 2b. MARKETPRICE
+              if (marketPriceIdx !== -1 && row[marketPriceIdx] && parseFloat(row[marketPriceIdx]) > 0) {
+                return parseFloat(row[marketPriceIdx]);
+              }
+
+              // 2c. LCLOSEPRICE
+              if (lclosePriceIdx !== -1 && row[lclosePriceIdx] && parseFloat(row[lclosePriceIdx]) > 0) {
+                return parseFloat(row[lclosePriceIdx]);
+              }
+            }
+
+            // 3. Если marketdata не дал цены — пробуем PREVPRICE из securities
+            if (securities?.data?.length) {
+              const secColumns = securities.columns;
+              const prevPriceIdx = secColumns.indexOf('PREVPRICE');
+              if (prevPriceIdx !== -1) {
+                for (const row of securities.data) {
+                  if (row[prevPriceIdx] && parseFloat(row[prevPriceIdx]) > 0) {
+                    return parseFloat(row[prevPriceIdx]);
+                  }
+                }
+              }
+            }
+          } catch (err) {
+            // Таймаут или сетевую ошибку сохраняем, но продолжаем
+            // пробовать другие рынки
+            lastError = err;
+          }
         }
-        throw new Error(`Актив ${ticker} не найден на Мосбирже`);
+
+        // Если ни один рынок не дал результата
+        throw lastError || new Error(`Актив "${tickerUpper}" не найден на Мосбирже`);
       }
 
+      /**
+       * Получить цены для нескольких активов.
+       * Каждый актив загружается независимо — если один упал,
+       * остальные всё равно загрузятся.
+       *
+       * @param {string[]} tickers - Массив тикеров
+       * @returns {Promise<{prices: (number|null)[], errors: string[]}>}
+       */
       static async fetchPrices(tickers) {
-        return Promise.all(tickers.map(ticker => this.fetchPrice(ticker)));
+        const results = await Promise.allSettled(
+          tickers.map(t => this.fetchPrice(t))
+        );
+
+        const prices = results.map(r =>
+          r.status === 'fulfilled' ? r.value : null
+        );
+
+        const errors = tickers
+          .map((t, i) =>
+            results[i].status === 'rejected'
+              ? `${t}: ${results[i].reason.message}`
+              : null
+          )
+          .filter(Boolean);
+
+        return { prices, errors };
       }
     }
 
@@ -265,8 +418,8 @@
 
     function PortfolioRebalancer() {
       const [assets, setAssets] = useState([
-        { id: 1, ticker: 'SBER', quantity: 10, price: 245.50, targetPercent: 50 },
-        { id: 2, ticker: 'GAZP', quantity: 20, price: 145.20, targetPercent: 50 },
+        { id: 1, ticker: 'SBER', quantity: 10, price: 0, targetPercent: 50 },
+        { id: 2, ticker: 'GAZP', quantity: 20, price: 0, targetPercent: 50 },
       ]);
 
       const [loading, setLoading] = useState(false);
@@ -297,27 +450,48 @@
         setAssets(prevAssets => prevAssets.filter(a => a.id !== id));
       }, [assets.length]);
 
+      /**
+       * Загрузка цен через ISS API Мосбиржи.
+       * Каждый актив загружается независимо — частичные ошибки не блокируют остальные.
+       */
       const handleRefreshPrices = useCallback(async () => {
         setLoading(true);
         setError(null);
         try {
           const tickers = assets.map(a => a.ticker).filter(t => t);
           if (tickers.length === 0) {
-            setError('Добавьте тикеры активов');
             setLoading(false);
             return;
           }
-          const prices = await PriceService.fetchPrices(tickers);
-          setAssets(prevAssets => prevAssets.map((asset, index) => ({
-            ...asset,
-            price: prices[index] || asset.price,
-          })));
+
+          const { prices, errors } = await MoexPriceService.fetchPrices(tickers);
+
+          // Обновляем цены — null оставляем старую цену
+          setAssets(prevAssets =>
+            prevAssets.map((asset, index) => ({
+              ...asset,
+              price: prices[index] !== null ? prices[index] : asset.price,
+            }))
+          );
+
+          // Показываем ошибки, если были
+          if (errors.length > 0) {
+            setError(`Не удалось загрузить: ${errors.join('; ')}`);
+          }
         } catch (err) {
           setError(`Ошибка получения цен: ${err.message}`);
         } finally {
           setLoading(false);
         }
       }, [assets]);
+
+      /**
+       * Автоматическая загрузка цен при первом рендере.
+       * Срабатывает только один раз при монтировании компонента.
+       */
+      useEffect(() => {
+        handleRefreshPrices();
+      }, []);
 
       return (
         <div className="min-h-screen bg-gradient-to-br from-slate-50 via-slate-100 to-slate-50">
