@@ -165,7 +165,7 @@ class AssetValidator {
  */
 function AssetRow({ asset, analysis, onUpdate, onRemove, isLoading }) {
   const handleQuantityChange = (e) => {
-    onUpdate({ ...asset, quantity: parseFloat(e.target.value) || 0 });
+    onUpdate({ ...asset, quantity: parseInt(e.target.value, 10) || 0 });
   };
 
   const handlePriceChange = (e) => {
@@ -210,7 +210,7 @@ function AssetRow({ asset, analysis, onUpdate, onRemove, isLoading }) {
           value={asset.quantity}
           onChange={handleQuantityChange}
           className="w-20 px-2 py-1 border border-slate-300 rounded text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
-          step="0.01"
+          step="1"
         />
       </td>
 
@@ -245,11 +245,11 @@ function AssetRow({ asset, analysis, onUpdate, onRemove, isLoading }) {
       </td>
 
       <td className="px-4 py-3 text-right font-mono text-sm">
-        <div className="text-slate-600">{analysis.requiredQuantity.toFixed(4)}</div>
+        <div className="text-slate-600">{Math.round(analysis.requiredQuantity)}</div>
       </td>
 
       <td className={`px-4 py-3 text-right font-mono font-medium ${getAdjustmentColor(analysis.adjustment)}`}>
-        <div>{analysis.adjustment > 0 ? '+' : ''}{analysis.adjustment.toFixed(4)}</div>
+        <div>{analysis.adjustment > 0 ? '+' : ''}{Math.round(analysis.adjustment)}</div>
         <div className="text-xs mt-1">{analysis.adjustmentValue > 0 ? '+' : ''}{analysis.adjustmentValue.toFixed(2)} ₽</div>
       </td>
 
