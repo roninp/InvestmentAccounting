@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react';
-import { TrendingUp, Plus, Trash2, RefreshCw, Calculator, CheckCircle, Clock } from 'lucide-react';
+import { TrendingUp, Plus, Trash2, RefreshCw, Calculator, CheckCircle, Clock, Scale } from 'lucide-react';
 
 // ============================================================================
 // DOMAIN LAYER - Бизнес-логика, независимая от UI
@@ -309,11 +309,12 @@ function NumericInput({ value, onChange, isInteger = false, ...inputProps }) {
  * @param {Object|null} props.analysis - Результат анализа (null пока расчёт не сделан)
  * @param {Function} props.onUpdate - Колбэк обновления
  * @param {Function} props.onRemove - Колбэк удаления
+ * @param {Function} props.onDistributeEqually - Колбэк распределения целей поровну
  * @param {boolean} props.isLoading - Флаг загрузки
  * @param {boolean} props.isLastAsset - Флаг единственного актива
  * @param {boolean} props.animate - Флаг анимации появления
  */
-function AssetRow({ asset, analysis, onUpdate, onRemove, isLoading, isLastAsset, animate }) {
+function AssetRow({ asset, analysis, onUpdate, onRemove, onDistributeEqually, isLoading, isLastAsset, animate }) {
   const getAdjustmentColor = (adj) => {
     if (adj > 0.1) return 'text-green-600 bg-green-50';
     if (adj < -0.1) return 'text-red-600 bg-red-50';
@@ -365,12 +366,21 @@ function AssetRow({ asset, analysis, onUpdate, onRemove, isLoading, isLastAsset,
       </td>
       {/* Цель % — всегда видно */}
       <td className="px-4 py-3">
-        <NumericInput
-          value={asset.targetPercent}
-          onChange={(val) => onUpdate({ ...asset, targetPercent: val })}
-          className="w-20 px-2 py-1 border border-slate-300 rounded text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
-          placeholder="0"
-        />
+        <div className="flex items-center gap-1">
+          <NumericInput
+            value={asset.targetPercent}
+            onChange={(val) => onUpdate({ ...asset, targetPercent: val })}
+            className="w-20 px-2 py-1 border border-slate-300 rounded text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
+            placeholder="0"
+          />
+          <button
+            onClick={onDistributeEqually}
+            className="p-1.5 text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded transition-colors"
+            title="Распределить поровну между ненулевыми активами"
+          >
+            <Scale size={16} />
+          </button>
+        </div>
       </td>
       {/* Текущий % — вычисляемое поле */}
       <td className="px-4 py-3 text-center">
@@ -563,6 +573,14 @@ export default function PortfolioRebalancer() {
     }, 400);
   }, [assets]);
 
+  /**
+   * Распределить целевые проценты поровну между активами.
+   * Использует готовую бизнес-логику из PortfolioCalculator.
+   */
+  const handleDistributeEqually = useCallback(() => {
+    setAssets(prevAssets => PortfolioCalculator.distributeTargets(prevAssets));
+  }, []);
+
   // ========================================================================
   // RENDER
   // ========================================================================
@@ -603,6 +621,7 @@ export default function PortfolioRebalancer() {
                       analysis={analysis.find(a => a.id === asset.id)}
                       onUpdate={handleUpdateAsset}
                       onRemove={handleRemoveAsset}
+                      onDistributeEqually={handleDistributeEqually}
                       isLoading={loading}
                       isLastAsset={assets.length <= 2}
                       animate={isCalculated}
