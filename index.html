@@ -9,6 +9,54 @@
   <style>
     body { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif; }
     .font-mono { font-family: 'Cascadia Code', 'Fira Code', 'JetBrains Mono', monospace; }
+
+    /* Анимация появления строк таблицы после расчёта */
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(12px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .animate-fade-in {
+      animation: fadeInUp 0.45s ease-out both;
+    }
+
+    /* Анимация пульсации кнопки во время расчёта */
+    @keyframes pulse-glow {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(59, 130, 246, 0.4); }
+      50%      { box-shadow: 0 0 0 8px rgba(59, 130, 246, 0); }
+    }
+    .animate-pulse-glow {
+      animation: pulse-glow 1s ease-in-out infinite;
+    }
+
+    /* Анимация спина иконки */
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+    .animate-spin-calc {
+      display: inline-block;
+      animation: spin 0.8s linear infinite;
+    }
+
+    /* Анимация подсветки карточек после расчёта */
+    @keyframes highlight-flash {
+      0%   { background-color: rgba(16, 185, 129, 0.25); }
+      100% { background-color: transparent; }
+    }
+    .animate-highlight {
+      animation: highlight-flash 0.8s ease-out;
+    }
+
+    /* Задержки для анимации строк (каждая следующая строка появляется позже) */
+    .animate-delay-1  { animation-delay: 0.00s; }
+    .animate-delay-2  { animation-delay: 0.04s; }
+    .animate-delay-3  { animation-delay: 0.08s; }
+    .animate-delay-4  { animation-delay: 0.12s; }
+    .animate-delay-5  { animation-delay: 0.16s; }
+    .animate-delay-6  { animation-delay: 0.20s; }
+    .animate-delay-7  { animation-delay: 0.24s; }
+    .animate-delay-8  { animation-delay: 0.28s; }
+    .animate-delay-9  { animation-delay: 0.32s; }
+    .animate-delay-10 { animation-delay: 0.36s; }
   </style>
 </head>
 <body>
@@ -20,39 +68,74 @@
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 
   <script type="text/babel">
-    const { useState, useCallback, useMemo, useEffect } = React;
+    const { useState, useCallback, useMemo, useEffect, useRef } = React;
 
     // ============================================================================
-    // DOMAIN LAYER - Бизнес-логика
+    // DOMAIN LAYER — Бизнес-логика, независимая от UI
     // ============================================================================
 
+    /**
+     * Сервис расчёта портфеля — S из SOLID (Single Responsibility).
+     */
     class PortfolioCalculator {
+      /**
+       * Расчёт общей стоимости портфеля.
+       * @param {Array} assets - Массив активов
+       * @returns {number} Сумма quantity * price по всем активам
+       */
       static calculateTotalValue(assets) {
         return assets.reduce((sum, asset) => sum + (asset.quantity * asset.price), 0);
       }
 
+      /**
+       * Расчёт процентного распределения портфеля.
+       * @param {Array} assets - Массив активов
+       * @returns {number[]} Процент каждого актива от общей стоимости
+       */
       static calculatePercentages(assets) {
         const total = this.calculateTotalValue(assets);
         if (total === 0) return assets.map(() => 0);
         return assets.map(asset => (asset.quantity * asset.price) / total * 100);
       }
 
+      /**
+       * Расчёт требуемого количества актива для достижения целевого процента.
+       * @param {Object} asset - Данные актива
+       * @param {number} targetPercent - Целевой процент
+       * @param {number} totalValue - Общая стоимость портфеля для расчёта
+       * @returns {number} Требуемое количество единиц актива
+       */
       static calculateRequiredQuantity(asset, targetPercent, totalValue) {
         if (totalValue === 0) return 0;
+        if (asset.price <= 0) return 0;
         return (targetPercent / 100) * totalValue / asset.price;
       }
 
+      /**
+       * Расчёт необходимых операций (сколько купить/продать).
+       * @param {number} currentQuantity - Текущее количество
+       * @param {number} requiredQuantity - Требуемое количество
+       * @returns {number} Разница (положительная — докупить, отрицательная — продать)
+       */
       static calculateAdjustment(currentQuantity, requiredQuantity) {
         return requiredQuantity - currentQuantity;
       }
 
-      static analyzePortfolio(assets) {
-        const totalValue = this.calculateTotalValue(assets);
+      /**
+       * Полный анализ портфеля с учётом эффективной стоимости.
+       *
+       * @param {Array} assets - Массив активов
+       * @param {number} effectiveTotalValue - Эффективная стоимость портфеля (портфель + добавка)
+       * @returns {Array} Массив активов с расчётными полями
+       */
+      static analyzePortfolio(assets, effectiveTotalValue = 0) {
         const currentPercentages = this.calculatePercentages(assets);
 
         return assets.map((asset, index) => {
           const currentPercent = currentPercentages[index];
-          const requiredQuantity = this.calculateRequiredQuantity(asset, asset.targetPercent, totalValue);
+          const requiredQuantity = effectiveTotalValue > 0
+            ? this.calculateRequiredQuantity(asset, asset.targetPercent, effectiveTotalValue)
+            : 0;
           const adjustment = this.calculateAdjustment(asset.quantity, requiredQuantity);
 
           return {
@@ -71,76 +154,37 @@
 
     /**
      * Сервис получения цен через ISS API Московской биржи.
-     *
-     * Автоматически определяет рынок (акции, ETF, облигации и т.д.)
-     * и режим торгов (доску) для каждого актива, извлекает цену последней
-     * сделки (LAST).
-     *
-     * ISS API: https://iss.moex.com/iss/
-     * Поддерживает CORS, не требует авторизации.
      */
     class MoexPriceService {
-      /** Базовый URL ISS API */
       static ISS_URL = 'https://iss.moex.com/iss';
 
-      /**
-       * Рынки для поиска актива в порядке приоритета.
-       * Каждый рынок проверяется последовательно, пока не найдётся цена.
-       */
       static MARKETS = [
-        { engine: 'stock', market: 'shares' },        // Акции
-        { engine: 'stock', market: 'etf' },            // ETF / ПИФы
-        { engine: 'stock', market: 'bonds' },          // Облигации
-        { engine: 'stock', market: 'foreignshares' },  // Иностранные акции
-        { engine: 'stock', market: 'depositaryreceipts' }, // Депозитарные расписки
+        { engine: 'stock', market: 'shares' },
+        { engine: 'stock', market: 'etf' },
+        { engine: 'stock', market: 'bonds' },
+        { engine: 'stock', market: 'foreignshares' },
+        { engine: 'stock', market: 'depositaryreceipts' },
       ];
 
-      /**
-       * Приоритет досок для выбора цены внутри одного рынка.
-       * TQBR — основной режим акций
-       * TQTF — ETF / ПИФы
-       * TQOB — облигации
-       * TQTD — депозитарные расписки
-       * TQPI — паи
-       * SMAL — малые предприятия (SME)
-       */
       static BOARD_PRIORITY = ['TQBR', 'TQTF', 'TQOB', 'TQTD', 'TQPI', 'SMAL', 'CETS'];
 
       /**
        * Получить текущую цену актива по тикеру.
-       *
-       * Алгоритм:
-       * 1. Перебирает рынки (акции → ETF → облигации → ...)
-       * 2. Для каждого рынка запрашивает marketdata и securities через ISS API
-       * 3. Ищет доску с ценой LAST в порядке приоритета BOARD_PRIORITY
-       * 4. Если LAST недоступен — использует MARKETPRICE (рыночная цена)
-       * 5. Если MARKETPRICE недоступен — использует LCLOSEPRICE (цена закрытия предыдущей сессии)
-       * 6. Если LCLOSEPRICE недоступен — использует PREVPRICE из securities (предыдущая цена закрытия)
-       * 7. Если ни одна приоритетная доска не найдена — берёт первую строку с ценой
-       *
        * @param {string} ticker - Тикер актива (например 'SBER')
        * @returns {Promise<number>} Цена актива
-       * @throws {Error} Если цена не найдена ни на одном рынке
+       * @throws {Error} Если цена не найдена
        */
       static async fetchPrice(ticker) {
         const tickerUpper = ticker.toUpperCase();
         let lastError = null;
 
-        // Перебираем рынки в порядке приоритета
         for (const { engine, market } of this.MARKETS) {
           try {
             const url = `${this.ISS_URL}/engines/${engine}/markets/${market}/securities/${tickerUpper}.json?iss.meta=off`;
+            const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
 
-            const response = await fetch(url, {
-              signal: AbortSignal.timeout(5000),
-            });
-
-            // 404 = актив не найден на этом рынке, пробуем следующий
             if (response.status === 404) continue;
-            if (!response.ok) {
-              lastError = new Error(`HTTP ${response.status}`);
-              continue;
-            }
+            if (!response.ok) { lastError = new Error(`HTTP ${response.status}`); continue; }
 
             const data = await response.json();
             const marketdata = data.marketdata;
@@ -156,145 +200,182 @@
 
             if (boardIdx === -1 || lastIdx === -1) continue;
 
-            // 1. Ищем подходящую доску по приоритету
             for (const board of this.BOARD_PRIORITY) {
               const row = marketdata.data.find(r => r[boardIdx] === board);
               if (!row) continue;
-
-              // 1a. LAST — цена последней сделки
-              if (row[lastIdx] && parseFloat(row[lastIdx]) > 0) {
-                return parseFloat(row[lastIdx]);
-              }
-
-              // 1b. MARKETPRICE — рыночная цена (доступна даже в нерабочие дни)
-              if (marketPriceIdx !== -1 && row[marketPriceIdx] && parseFloat(row[marketPriceIdx]) > 0) {
-                return parseFloat(row[marketPriceIdx]);
-              }
-
-              // 1c. LCLOSEPRICE — цена закрытия предыдущей сессии
-              if (lclosePriceIdx !== -1 && row[lclosePriceIdx] && parseFloat(row[lclosePriceIdx]) > 0) {
-                return parseFloat(row[lclosePriceIdx]);
-              }
+              if (row[lastIdx] && parseFloat(row[lastIdx]) > 0) return parseFloat(row[lastIdx]);
+              if (marketPriceIdx !== -1 && row[marketPriceIdx] && parseFloat(row[marketPriceIdx]) > 0) return parseFloat(row[marketPriceIdx]);
+              if (lclosePriceIdx !== -1 && row[lclosePriceIdx] && parseFloat(row[lclosePriceIdx]) > 0) return parseFloat(row[lclosePriceIdx]);
             }
 
-            // 2. Если не нашли по приоритету — берём первую строку с ценой
             for (const row of marketdata.data) {
-              // 2a. LAST
-              if (row[lastIdx] && parseFloat(row[lastIdx]) > 0) {
-                return parseFloat(row[lastIdx]);
-              }
-
-              // 2b. MARKETPRICE
-              if (marketPriceIdx !== -1 && row[marketPriceIdx] && parseFloat(row[marketPriceIdx]) > 0) {
-                return parseFloat(row[marketPriceIdx]);
-              }
-
-              // 2c. LCLOSEPRICE
-              if (lclosePriceIdx !== -1 && row[lclosePriceIdx] && parseFloat(row[lclosePriceIdx]) > 0) {
-                return parseFloat(row[lclosePriceIdx]);
-              }
+              if (row[lastIdx] && parseFloat(row[lastIdx]) > 0) return parseFloat(row[lastIdx]);
+              if (marketPriceIdx !== -1 && row[marketPriceIdx] && parseFloat(row[marketPriceIdx]) > 0) return parseFloat(row[marketPriceIdx]);
+              if (lclosePriceIdx !== -1 && row[lclosePriceIdx] && parseFloat(row[lclosePriceIdx]) > 0) return parseFloat(row[lclosePriceIdx]);
             }
 
-            // 3. Если marketdata не дал цены — пробуем PREVPRICE из securities
             if (securities?.data?.length) {
               const secColumns = securities.columns;
               const prevPriceIdx = secColumns.indexOf('PREVPRICE');
               if (prevPriceIdx !== -1) {
                 for (const row of securities.data) {
-                  if (row[prevPriceIdx] && parseFloat(row[prevPriceIdx]) > 0) {
-                    return parseFloat(row[prevPriceIdx]);
-                  }
+                  if (row[prevPriceIdx] && parseFloat(row[prevPriceIdx]) > 0) return parseFloat(row[prevPriceIdx]);
                 }
               }
             }
-          } catch (err) {
-            // Таймаут или сетевую ошибку сохраняем, но продолжаем
-            // пробовать другие рынки
-            lastError = err;
-          }
+          } catch (err) { lastError = err; }
         }
 
-        // Если ни один рынок не дал результата
         throw lastError || new Error(`Актив "${tickerUpper}" не найден на Мосбирже`);
       }
 
       /**
        * Получить цены для нескольких активов.
-       * Каждый актив загружается независимо — если один упал,
-       * остальные всё равно загрузятся.
-       *
        * @param {string[]} tickers - Массив тикеров
        * @returns {Promise<{prices: (number|null)[], errors: string[]}>}
        */
       static async fetchPrices(tickers) {
-        const results = await Promise.allSettled(
-          tickers.map(t => this.fetchPrice(t))
-        );
-
-        const prices = results.map(r =>
-          r.status === 'fulfilled' ? r.value : null
-        );
-
+        const results = await Promise.allSettled(tickers.map(t => this.fetchPrice(t)));
+        const prices = results.map(r => r.status === 'fulfilled' ? r.value : null);
         const errors = tickers
-          .map((t, i) =>
-            results[i].status === 'rejected'
-              ? `${t}: ${results[i].reason.message}`
-              : null
-          )
+          .map((t, i) => results[i].status === 'rejected' ? `${t}: ${results[i].reason.message}` : null)
           .filter(Boolean);
-
         return { prices, errors };
       }
     }
 
+    /**
+     * Валидатор активов — D из SOLID (Dependency Inversion).
+     */
     class AssetValidator {
+      /**
+       * Валидация одного актива.
+       * @param {Object} asset - Данные актива
+       * @returns {{ isValid: boolean, errors: string[] }}
+       */
       static validate(asset) {
         const errors = [];
-        if (!asset.ticker || asset.ticker.trim() === '') {
-          errors.push('Тикер не может быть пустым');
-        }
-        if (asset.quantity < 0) {
-          errors.push('Количество не может быть отрицательным');
-        }
-        if (asset.price <= 0) {
-          errors.push('Цена должна быть положительной');
-        }
-        if (asset.targetPercent < 0 || asset.targetPercent > 100) {
-          errors.push('Целевой процент должен быть от 0 до 100');
-        }
+        if (asset.quantity < 0) errors.push('Количество не может быть отрицательным');
+        if (asset.price < 0) errors.push('Цена не может быть отрицательной');
+        if (asset.targetPercent < 0 || asset.targetPercent > 100) errors.push('Целевой процент должен быть от 0 до 100');
         return { isValid: errors.length === 0, errors };
       }
 
+      /**
+       * Валидация портфеля в целом.
+       * Предупреждение показывается только если хотя бы один актив имеет целевой процент > 0.
+       * @param {Array} assets - Массив активов
+       * @returns {{ isValid: boolean, error?: string, shouldShow?: boolean }}
+       */
       static validatePortfolio(assets) {
+        // Если все активы имеют targetPercent = 0 — пользователь ещё не начал ввод, не показываем предупреждение
+        const hasAnyTarget = assets.some(a => a.targetPercent > 0);
+        if (!hasAnyTarget) return { isValid: true, shouldShow: false };
+
         const totalPercent = assets.reduce((sum, a) => sum + a.targetPercent, 0);
         if (Math.abs(totalPercent - 100) > 0.01) {
           return {
             isValid: false,
+            shouldShow: true,
             error: `Сумма целевых процентов должна быть 100%, сейчас ${totalPercent.toFixed(2)}%`,
           };
         }
-        return { isValid: true };
+        return { isValid: true, shouldShow: true };
       }
     }
 
     // ============================================================================
-    // UI LAYER - React компоненты
+    // UI LAYER — React компоненты
     // ============================================================================
 
-    function AssetRow({ asset, analysis, onUpdate, onRemove, isLoading }) {
-      const handleQuantityChange = (e) => {
-        onUpdate({ ...asset, quantity: parseInt(e.target.value, 10) || 0 });
-      };
-      const handlePriceChange = (e) => {
-        onUpdate({ ...asset, price: parseFloat(e.target.value) || 0 });
-      };
-      const handleTargetPercentChange = (e) => {
-        onUpdate({ ...asset, targetPercent: parseFloat(e.target.value) || 0 });
+    /**
+     * Интеллектуальное числовое поле ввода.
+     * Хранит сырое строковое значение во время редактирования — позволяет
+     * полностью стереть содержимое поля, не блокируясь на NaN/0.
+     * При потере фокуса парсит строку в число и убирает ведущие нули.
+     *
+     * @param {Object} props
+     * @param {number} props.value - Текущее числовое значение
+     * @param {Function} props.onChange - Колбэк с новым числовым значением (number)
+     * @param {boolean} [props.isInteger] - Если true — допускает только целые числа
+     * @param {Object} props.inputProps - Остальные атрибуты для <input>
+     */
+    function NumericInput({ value, onChange, isInteger = false, ...inputProps }) {
+      const [rawValue, setRawValue] = useState(String(value));
+
+      // Синхронизация при изменении value извне
+      const externalChangeRef = useRef(() => {});
+      externalChangeRef.current = () => setRawValue(String(value));
+
+      useEffect(() => {
+        externalChangeRef.current();
+      }, [value]);
+
+      /**
+       * Обработка ввода: разрешает только числа (целые или с плавающей точкой)
+       */
+      const handleChange = (e) => {
+        const v = e.target.value;
+        if (isInteger) {
+          if (v === '' || /^\d+$/.test(v)) {
+            setRawValue(v);
+          }
+        } else {
+          if (v === '' || /^\d+\.?\d*$/.test(v) || /^\d*\.?\d+$/.test(v)) {
+            setRawValue(v);
+          }
+        }
       };
 
-      const getAdjustmentColor = (adjustment) => {
-        if (adjustment > 0.1) return 'text-green-600 bg-green-50';
-        if (adjustment < -0.1) return 'text-red-600 bg-red-50';
+      /**
+       * При потере фокуса — парсим число, вызываем onChange,
+       * убираем ведущие нули.
+       */
+      const handleBlur = () => {
+        const trimmed = rawValue.trim();
+        if (trimmed === '') {
+          onChange(0);
+          setRawValue('0');
+          return;
+        }
+        const parsed = isInteger ? parseInt(trimmed, 10) : parseFloat(trimmed);
+        const num = isNaN(parsed) ? 0 : parsed;
+        onChange(num);
+        setRawValue(String(num));
+      };
+
+      return (
+        <input
+          type="text"
+          inputMode={isInteger ? 'numeric' : 'decimal'}
+          value={rawValue}
+          onChange={handleChange}
+          onBlur={handleBlur}
+          {...inputProps}
+        />
+      );
+    }
+
+    /**
+     * Строка таблицы актива.
+     *
+     * Поля ввода (тикер, кол-во, цена, цель %) показываются ВСЕГДА.
+     * Вычисляемые колонки (сумма, текущий %, требуется, купить/продать) — только после расчёта.
+     *
+     * @param {Object} props
+     * @param {Object} props.asset - Данные актива
+     * @param {Object|null} props.analysis - Результат анализа (null пока расчёт не сделан)
+     * @param {Function} props.onUpdate - Колбэк обновления актива
+     * @param {Function} props.onRemove - Колбэк удаления актива
+     * @param {boolean} props.isLoading - Флаг загрузки цен
+     * @param {boolean} props.isLastAsset - Флаг единственного оставшегося актива
+     * @param {boolean} props.animate - Флаг анимации появления строки
+     * @param {number} props.animateDelay - Индекс для задержки анимации
+     */
+    function AssetRow({ asset, analysis, onUpdate, onRemove, isLoading, isLastAsset, animate, animateDelay }) {
+      const getAdjustmentColor = (adj) => {
+        if (adj > 0.1) return 'text-green-600 bg-green-50';
+        if (adj < -0.1) return 'text-red-600 bg-red-50';
         return 'text-gray-600';
       };
 
@@ -304,10 +385,11 @@
         return 'bg-blue-100 text-blue-900';
       };
 
-      if (!analysis) return null;
+      const delayClass = animate ? `animate-delay-${Math.min(animateDelay + 1, 10)}` : '';
 
       return (
-        <tr className="border-b border-slate-200 hover:bg-slate-50 transition-colors">
+        <tr className={`border-b border-slate-200 hover:bg-slate-50 transition-colors ${animate ? `animate-fade-in ${delayClass}` : ''}`}>
+          {/* Тикер — всегда видно */}
           <td className="px-2 sm:px-4 py-3 font-medium text-slate-900">
             <input
               type="text"
@@ -315,57 +397,78 @@
               onChange={(e) => onUpdate({ ...asset, ticker: e.target.value.toUpperCase() })}
               className="w-24 px-2 py-1 border border-slate-300 rounded font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               maxLength="6"
+              placeholder="ТИКЕР"
             />
           </td>
+          {/* Количество — всегда видно */}
           <td className="px-2 sm:px-4 py-3">
-            <input
-              type="number"
+            <NumericInput
               value={asset.quantity}
-              onChange={handleQuantityChange}
+              onChange={(val) => onUpdate({ ...asset, quantity: val })}
+              isInteger
               className="w-20 px-2 py-1 border border-slate-300 rounded text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
-              step="1"
+              placeholder="0"
             />
           </td>
+          {/* Цена — всегда видно */}
           <td className="px-2 sm:px-4 py-3 text-right font-mono">
-            <input
-              type="number"
+            <NumericInput
               value={asset.price}
-              onChange={handlePriceChange}
+              onChange={(val) => onUpdate({ ...asset, price: val })}
               disabled={isLoading}
               className="w-24 ml-auto px-2 py-1 border border-slate-300 rounded text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100"
-              step="0.01"
+              placeholder="0.00"
             />
           </td>
+          {/* Сумма — вычисляемое поле */}
           <td className="px-2 sm:px-4 py-3 text-right font-mono text-slate-900 font-medium">
-            {analysis.currentValue.toFixed(2)} ₽
+            {analysis ? `${analysis.currentValue.toFixed(2)} ₽` : '—'}
           </td>
+          {/* Цель % — всегда видно */}
           <td className="px-2 sm:px-4 py-3">
-            <input
-              type="number"
+            <NumericInput
               value={asset.targetPercent}
-              onChange={handleTargetPercentChange}
+              onChange={(val) => onUpdate({ ...asset, targetPercent: val })}
               className="w-20 px-2 py-1 border border-slate-300 rounded text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
-              min="0" max="100" step="0.1"
+              placeholder="0"
             />
           </td>
+          {/* Текущий % — вычисляемое поле */}
           <td className="px-2 sm:px-4 py-3 text-center">
-            <span className={`inline-block px-3 py-1 rounded-full text-sm font-medium ${getPercentageColor(analysis.currentPercent, asset.targetPercent)}`}>
-              {analysis.currentPercent.toFixed(1)}%
-            </span>
+            {analysis ? (
+              <span className={`inline-block px-3 py-1 rounded-full text-sm font-medium ${getPercentageColor(analysis.currentPercent, asset.targetPercent)}`}>
+                {analysis.currentPercent.toFixed(1)}%
+              </span>
+            ) : (
+              <span className="text-slate-400">—</span>
+            )}
           </td>
+          {/* Требуется — вычисляемое поле */}
           <td className="px-2 sm:px-4 py-3 text-right font-mono text-sm">
-            <div className="text-slate-600">{Math.round(analysis.requiredQuantity)}</div>
+            {analysis ? (
+              <div className="text-slate-600">{Math.round(analysis.requiredQuantity)}</div>
+            ) : (
+              <div className="text-slate-400">—</div>
+            )}
           </td>
-          <td className={`px-2 sm:px-4 py-3 text-right font-mono font-medium ${getAdjustmentColor(analysis.adjustment)}`}>
-            <div>{analysis.adjustment > 0 ? '+' : ''}{Math.round(analysis.adjustment)}</div>
-            <div className="text-xs mt-1">{analysis.adjustmentValue > 0 ? '+' : ''}{analysis.adjustmentValue.toFixed(2)} ₽</div>
+          {/* Купить/Продать — вычисляемое поле */}
+          <td className={`px-2 sm:px-4 py-3 text-right font-mono font-medium ${analysis ? getAdjustmentColor(analysis.adjustment) : ''}`}>
+            {analysis ? (
+              <>
+                <div>{analysis.adjustment > 0 ? '+' : ''}{Math.round(analysis.adjustment)}</div>
+                <div className="text-xs mt-1">{analysis.adjustmentValue > 0 ? '+' : ''}{analysis.adjustmentValue.toFixed(2)} ₽</div>
+              </>
+            ) : (
+              <div className="text-slate-400">—</div>
+            )}
           </td>
+          {/* Удалить — всегда видно */}
           <td className="px-2 sm:px-4 py-3 text-center">
             <button
               onClick={() => onRemove(asset.id)}
-              disabled={asset.id <= 2}
+              disabled={isLastAsset}
               className="p-1 text-slate-500 hover:text-red-600 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-              title="Минимум 2 актива"
+              title="Минимум 1 актив"
             >
               🗑️
             </button>
@@ -374,6 +477,9 @@
       );
     }
 
+    /**
+     * Заголовок таблицы — статический компонент.
+     */
     function PortfolioHeader() {
       return (
         <thead className="bg-gradient-to-r from-slate-900 to-slate-800 text-white">
@@ -392,106 +498,192 @@
       );
     }
 
-    function PortfolioSummary({ analysis }) {
-      const totalValue = PortfolioCalculator.calculateTotalValue(analysis);
-      const totalAdjustmentValue = analysis.reduce((sum, a) => sum + Math.abs(a.adjustmentValue), 0);
-
+    /**
+     * Карточки сводки портфеля с редактируемыми полями.
+     *
+     * @param {Object} props
+     * @param {number} props.portfolioValue - Текущая стоимость портфеля
+     * @param {number} props.additionalInvestment - Добавляемая сумма
+     * @param {number} props.totalAdjustmentValue - Сумма абсолютных отклонений
+     * @param {number} props.onTargetCount - Количество активов в целевых пропорциях
+     * @param {number} props.totalAssetCount - Общее количество активов
+     * @param {Function} props.onPortfolioValueChange - Колбэк изменения стоимости
+     * @param {Function} props.onAdditionalInvestmentChange - Колбэк изменения добавляемой суммы
+     * @param {boolean} props.highlight - Флаг анимации подсветки
+     */
+    function PortfolioHeaderCards({
+      portfolioValue,
+      additionalInvestment,
+      totalAdjustmentValue,
+      onTargetCount,
+      totalAssetCount,
+      onPortfolioValueChange,
+      onAdditionalInvestmentChange,
+      highlight,
+    }) {
       return (
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6">
+        <div className={`grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6 ${highlight ? 'animate-highlight' : ''}`}>
           <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-4 border border-blue-200">
             <div className="text-sm text-blue-600 font-medium mb-1">Стоимость портфеля</div>
-            <div className="text-2xl font-bold text-blue-900">{totalValue.toFixed(2)} ₽</div>
+            <NumericInput
+              value={portfolioValue}
+              onChange={onPortfolioValueChange}
+              className="w-full text-2xl font-bold text-blue-900 bg-transparent border-b-2 border-blue-300 focus:outline-none focus:border-blue-600 px-1 py-0.5"
+              placeholder="0.00"
+            />
           </div>
           <div className="bg-gradient-to-br from-purple-50 to-purple-100 rounded-lg p-4 border border-purple-200">
-            <div className="text-sm text-purple-600 font-medium mb-1">Требуется ребалансировки</div>
-            <div className="text-2xl font-bold text-purple-900">{totalAdjustmentValue.toFixed(2)} ₽</div>
+            <div className="text-sm text-purple-600 font-medium mb-1">Добавить сумму</div>
+            <NumericInput
+              value={additionalInvestment}
+              onChange={onAdditionalInvestmentChange}
+              className="w-full text-2xl font-bold text-purple-900 bg-transparent border-b-2 border-purple-300 focus:outline-none focus:border-purple-600 px-1 py-0.5"
+              placeholder="0.00"
+            />
+            {totalAdjustmentValue > 0 && (
+              <div className="text-xs text-purple-500 mt-1">
+                Требуется ребалансировки: {totalAdjustmentValue.toFixed(2)} ₽
+              </div>
+            )}
           </div>
           <div className="bg-gradient-to-br from-emerald-50 to-emerald-100 rounded-lg p-4 border border-emerald-200">
             <div className="text-sm text-emerald-600 font-medium mb-1">В целевых пропорциях</div>
             <div className="text-2xl font-bold text-emerald-900">
-              {analysis.filter(a => Math.abs(a.currentPercent - a.targetPercent) < 1).length}/{analysis.length}
+              {onTargetCount}/{totalAssetCount}
             </div>
           </div>
         </div>
       );
     }
 
+    /**
+     * Главный компонент приложения — Orchestrator.
+     */
     function PortfolioRebalancer() {
-      const [assets, setAssets] = useState([
-        { id: 1, ticker: 'SBER', quantity: 10, price: 0, targetPercent: 50 },
-        { id: 2, ticker: 'GAZP', quantity: 20, price: 0, targetPercent: 50 },
-      ]);
+      // ========================================================================
+      // STATE
+      // ========================================================================
 
+      const [assets, setAssets] = useState([]);
+      const [portfolioValue, setPortfolioValue] = useState(0);
+      const [additionalInvestment, setAdditionalInvestment] = useState(0);
       const [loading, setLoading] = useState(false);
       const [error, setError] = useState(null);
-      const [nextId, setNextId] = useState(3);
+      const [nextId, setNextId] = useState(1);
 
-      const analysis = useMemo(() => PortfolioCalculator.analyzePortfolio(assets), [assets]);
+      // Управление расчётом
+      const [isCalculated, setIsCalculated] = useState(false);
+      const [calculatedTotalValue, setCalculatedTotalValue] = useState(0);
+      const [isCalculating, setIsCalculating] = useState(false);
+      const [highlightCards, setHighlightCards] = useState(false);
+      const [animationKey, setAnimationKey] = useState(0);
+
+      // ========================================================================
+      // DERIVED
+      // ========================================================================
+
+      const effectiveTotalValue = portfolioValue + additionalInvestment;
+
+      const analysis = useMemo(() => {
+        if (!isCalculated) return [];
+        return PortfolioCalculator.analyzePortfolio(assets, calculatedTotalValue);
+      }, [assets, calculatedTotalValue, isCalculated]);
+
+      // Валидация с учётом shouldShow — не показываем, если пользователь ещё не вводил проценты
       const portfolioValidation = useMemo(() => AssetValidator.validatePortfolio(assets), [assets]);
+
+      // ========================================================================
+      // HELPERS
+      // ========================================================================
+
+      const resetCalculation = useCallback(() => { setIsCalculated(false); }, []);
+
+      // ========================================================================
+      // HANDLERS
+      // ========================================================================
 
       const handleUpdateAsset = useCallback((updatedAsset) => {
         const validation = AssetValidator.validate(updatedAsset);
-        if (!validation.isValid) {
-          setError(validation.errors[0]);
-          return;
-        }
-        setAssets(prevAssets => prevAssets.map(a => a.id === updatedAsset.id ? updatedAsset : a));
+        if (!validation.isValid) { setError(validation.errors[0]); return; }
+        setAssets(prevAssets => {
+          const oldAsset = prevAssets.find(a => a.id === updatedAsset.id);
+          const updated = prevAssets.map(a => a.id === updatedAsset.id ? updatedAsset : a);
+          // Сбрасываем расчёт только при изменении целевого процента,
+          // изменение количества или цены не должно ломать расчёт
+          if (oldAsset && oldAsset.targetPercent !== updatedAsset.targetPercent) {
+            setTimeout(() => resetCalculation(), 0);
+          }
+          return updated;
+        });
         setError(null);
-      }, []);
+      }, [resetCalculation]);
 
       const handleAddAsset = useCallback(() => {
         setAssets(prevAssets => [...prevAssets, { id: nextId, ticker: '', quantity: 0, price: 0, targetPercent: 0 }]);
         setNextId(prev => prev + 1);
         setError(null);
-      }, [nextId]);
+        resetCalculation();
+      }, [nextId, resetCalculation]);
 
       const handleRemoveAsset = useCallback((id) => {
-        if (assets.length <= 2) return;
+        if (assets.length <= 1) return;
         setAssets(prevAssets => prevAssets.filter(a => a.id !== id));
-      }, [assets.length]);
+        resetCalculation();
+      }, [assets.length, resetCalculation]);
 
-      /**
-       * Загрузка цен через ISS API Мосбиржи.
-       * Каждый актив загружается независимо — частичные ошибки не блокируют остальные.
-       */
+      const handlePortfolioValueChange = useCallback((value) => {
+        setPortfolioValue(value);
+        resetCalculation();
+      }, [resetCalculation]);
+
+      const handleAdditionalInvestmentChange = useCallback((value) => {
+        setAdditionalInvestment(value);
+        resetCalculation();
+      }, [resetCalculation]);
+
       const handleRefreshPrices = useCallback(async () => {
         setLoading(true);
         setError(null);
         try {
           const tickers = assets.map(a => a.ticker).filter(t => t);
-          if (tickers.length === 0) {
-            setLoading(false);
-            return;
-          }
-
+          if (tickers.length === 0) { setLoading(false); return; }
           const { prices, errors } = await MoexPriceService.fetchPrices(tickers);
-
-          // Обновляем цены — null оставляем старую цену
-          setAssets(prevAssets =>
-            prevAssets.map((asset, index) => ({
-              ...asset,
-              price: prices[index] !== null ? prices[index] : asset.price,
-            }))
-          );
-
-          // Показываем ошибки, если были
-          if (errors.length > 0) {
-            setError(`Не удалось загрузить: ${errors.join('; ')}`);
-          }
+          setAssets(prevAssets => prevAssets.map((asset, index) => ({
+            ...asset,
+            price: prices[index] !== null ? prices[index] : asset.price,
+          })));
+          if (errors.length > 0) setError(`Не удалось загрузить: ${errors.join('; ')}`);
+          resetCalculation();
         } catch (err) {
           setError(`Ошибка получения цен: ${err.message}`);
-        } finally {
-          setLoading(false);
-        }
-      }, [assets]);
+        } finally { setLoading(false); }
+      }, [assets, resetCalculation]);
 
-      /**
-       * Автоматическая загрузка цен при первом рендере.
-       * Срабатывает только один раз при монтировании компонента.
-       */
-      useEffect(() => {
-        handleRefreshPrices();
-      }, []);
+      const handleCalculate = useCallback(() => {
+        setIsCalculating(true);
+        setTimeout(() => {
+          setCalculatedTotalValue(effectiveTotalValue);
+          setIsCalculated(true);
+          setIsCalculating(false);
+          setAnimationKey(prev => prev + 1);
+          setHighlightCards(true);
+          setTimeout(() => setHighlightCards(false), 800);
+        }, 400);
+      }, [effectiveTotalValue]);
+
+      useEffect(() => { handleRefreshPrices(); }, []);
+
+      // ========================================================================
+      // UI VALUES
+      // ========================================================================
+
+      const totalAdjustmentValue = analysis.reduce((sum, a) => sum + Math.abs(a.adjustmentValue), 0);
+      const onTargetCount = analysis.filter(a => Math.abs(a.currentPercent - a.targetPercent) < 1).length;
+      const canCalculate = effectiveTotalValue > 0 && assets.length > 0 && !isCalculating;
+
+      // ========================================================================
+      // RENDER
+      // ========================================================================
 
       return (
         <div className="min-h-screen bg-gradient-to-br from-slate-50 via-slate-100 to-slate-50">
@@ -506,7 +698,16 @@
           </div>
 
           <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
-            <PortfolioSummary analysis={analysis} />
+            <PortfolioHeaderCards
+              portfolioValue={portfolioValue}
+              additionalInvestment={additionalInvestment}
+              totalAdjustmentValue={totalAdjustmentValue}
+              onTargetCount={onTargetCount}
+              totalAssetCount={analysis.length}
+              onPortfolioValueChange={handlePortfolioValueChange}
+              onAdditionalInvestmentChange={handleAdditionalInvestmentChange}
+              highlight={highlightCards}
+            />
 
             {error && (
               <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-800 text-sm">
@@ -514,31 +715,74 @@
               </div>
             )}
 
-            <div className="bg-white rounded-lg shadow-md border border-slate-200 overflow-x-auto">
-              <table className="w-full min-w-[700px]">
-                <PortfolioHeader />
-                <tbody>
-                  {assets.map(asset => (
-                    <AssetRow
-                      key={asset.id}
-                      asset={asset}
-                      analysis={analysis.find(a => a.id === asset.id)}
-                      onUpdate={handleUpdateAsset}
-                      onRemove={handleRemoveAsset}
-                      isLoading={loading}
-                    />
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            {assets.length > 0 ? (
+              <>
+                <div className="bg-white rounded-lg shadow-md border border-slate-200 overflow-x-auto">
+                  <table className="w-full min-w-[700px]">
+                    <PortfolioHeader />
+                    <tbody key={animationKey}>
+                      {assets.map((asset, index) => (
+                        <AssetRow
+                          key={asset.id}
+                          asset={asset}
+                          analysis={analysis.find(a => a.id === asset.id)}
+                          onUpdate={handleUpdateAsset}
+                          onRemove={handleRemoveAsset}
+                          isLoading={loading}
+                          isLastAsset={assets.length <= 1}
+                          animate={isCalculated}
+                          animateDelay={index}
+                        />
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
 
-            {!portfolioValidation.isValid && (
-              <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-sm">
-                ⚠️ {portfolioValidation.error}
+                {/* Предупреждение о сумме процентов — только если пользователь уже начал вводить проценты */}
+                {portfolioValidation.shouldShow && !portfolioValidation.isValid && (
+                  <div className="mt-4 p-4 bg-amber-50 border border-amber-200 rounded-lg text-amber-800 text-sm">
+                    ⚠️ {portfolioValidation.error}
+                  </div>
+                )}
+
+                {/* Подсказка — только если есть данные для расчёта */}
+                {!isCalculated && effectiveTotalValue > 0 && (
+                  <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg text-blue-800 text-sm">
+                    💡 Изменены данные. Нажмите <strong>«Рассчитать»</strong> для обновления результатов ребалансировки.
+                  </div>
+                )}
+              </>
+            ) : (
+              <div className="bg-white rounded-lg shadow-md border border-slate-200 p-8 text-center">
+                <div className="text-4xl mb-4">📊</div>
+                <h3 className="text-lg font-semibold text-slate-700 mb-2">Портфель пуст</h3>
+                <p className="text-slate-500 mb-4">Добавьте активы и укажите стоимость портфеля для расчёта ребалансировки</p>
               </div>
             )}
 
             <div className="mt-6 flex flex-col sm:flex-row gap-3">
+              <button
+                onClick={handleCalculate}
+                disabled={!canCalculate}
+                className={`
+                  flex items-center justify-center gap-2 px-4 py-2 rounded-lg font-medium
+                  transition-all duration-300 w-full sm:w-auto
+                  ${isCalculating
+                    ? 'bg-blue-500 text-white animate-pulse-glow cursor-wait'
+                    : isCalculated
+                      ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-md shadow-emerald-200'
+                      : canCalculate
+                        ? 'bg-blue-600 text-white hover:bg-blue-700'
+                        : 'bg-slate-400 text-white cursor-not-allowed'
+                  }
+                `}
+              >
+                <span className={isCalculating ? 'animate-spin-calc' : ''}>
+                  {isCalculating ? '⏳' : isCalculated ? '✅' : '🧮'}
+                </span>
+                {isCalculating ? 'Расчёт...' : isCalculated ? 'Рассчитано' : 'Рассчитать'}
+              </button>
+
               <button
                 onClick={handleRefreshPrices}
                 disabled={loading || assets.filter(a => a.ticker).length === 0}
@@ -558,10 +802,13 @@
             <div className="mt-8 p-4 bg-slate-100 rounded-lg text-slate-700 text-sm">
               <p className="font-medium mb-2">💡 Как использовать:</p>
               <ul className="list-disc list-inside space-y-1 text-slate-600">
-                <li>Введите тикер актива и нажмите "Обновить цены" для загрузки текущих котировок</li>
-                <li>Установите целевой процент для каждого актива (сумма должна быть 100%)</li>
-                <li>Колонка "Купить/Продать" показывает необходимые действия для ребалансировки</li>
-                <li>Зелёный цвет - актив в целевых пропорциях, жёлтый - избыточный, синий - недостаточный</li>
+                <li>Укажите общую сумму вашего портфеля в поле <strong>Стоимость портфеля</strong></li>
+                <li>Добавьте активы — введите тикер, количество и целевой процент</li>
+                <li>Нажмите <strong>Обновить цены</strong> для загрузки текущих котировок с Мосбиржи</li>
+                <li>Нажмите <strong>Рассчитать</strong> для выполнения расчёта ребалансировки</li>
+                <li>Чтобы докупить активов — введите нужную сумму в поле <strong>Добавить сумму</strong> и нажмите <strong>Рассчитать</strong> снова</li>
+                <li>Колонка <strong>Купить/Продать</strong> покажет необходимые действия для ребалансировки</li>
+                <li>Зелёный цвет — актив в целевых пропорциях, жёлтый — избыточный, синий — недостаточный</li>
               </ul>
             </div>
           </div>
