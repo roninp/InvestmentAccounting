@@ -597,7 +597,7 @@
       return (
         <div className={`grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6 ${highlight ? 'animate-highlight' : ''}`}>
           <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-4 border border-blue-200">
-            <div className="text-sm text-blue-600 font-medium mb-1">Стоимость портфеля</div>
+            <div className="text-sm text-blue-600 font-medium mb-1">Стоимость активов</div>
             <NumericInput
               value={portfolioValue}
               onChange={onPortfolioValueChange}
@@ -630,11 +630,6 @@
                   ➕
                 </button>
               </div>
-            {totalAdjustmentValue > 0 && (
-              <div className="text-xs text-purple-500 mt-1">
-                Требуется ребалансировки: {totalAdjustmentValue.toFixed(2)} ₽
-              </div>
-            )}
           </div>
           <div className="bg-gradient-to-br from-emerald-50 to-emerald-100 rounded-lg p-4 border border-emerald-200">
             <div className="text-sm text-emerald-600 font-medium mb-1">В целевых пропорциях</div>
@@ -906,7 +901,7 @@
             <div className="mt-8 p-4 bg-slate-100 rounded-lg text-slate-700 text-sm">
               <p className="font-medium mb-2">💡 Как использовать:</p>
               <ul className="list-disc list-inside space-y-1 text-slate-600">
-                <li>Укажите общую сумму вашего портфеля в поле <strong>Стоимость портфеля</strong></li>
+                <li>Укажите общую сумму вашего портфеля в поле <strong>Стоимость активов</strong></li>
                 <li>Добавьте активы — введите тикер, количество и целевой процент</li>
                 <li>Нажмите <strong>Обновить цены</strong> для загрузки текущих котировок с Мосбиржи</li>
                 <li>Нажмите <strong>Рассчитать</strong> для выполнения расчёта ребалансировки</li>
