@@ -640,7 +640,6 @@
 
       const [assets, setAssets] = useState([]);
       const [additionalInvestment, setAdditionalInvestment] = useState(null);
-      const [accumulatedAdditional, setAccumulatedAdditional] = useState(0);
       const [loading, setLoading] = useState(false);
       const [error, setError] = useState(null);
       const [nextId, setNextId] = useState(1);
@@ -657,7 +656,9 @@
       // ========================================================================
 
       const portfolioValue = assets.reduce((sum, a) => sum + (a.quantity * a.price), 0);
-      const effectiveTotalValue = portfolioValue + accumulatedAdditional;
+      // Сумма из поля «Добавить сумму» участвует только в ближайшем расчёте
+      // (см. handleCalculate) и никогда не накапливается «навсегда».
+      const effectiveTotalValue = portfolioValue + (additionalInvestment > 0 ? additionalInvestment : 0);
 
       const analysis = useMemo(() => {
         if (!isCalculated) return [];
@@ -736,27 +737,25 @@
       const handleCalculate = useCallback(() => {
         setIsCalculating(true);
 
-        // Если в поле «Добавить сумму» введено ненулевое значение — переносим
-        // его в накопленную добавку и очищаем поле. Пустое/нулевое поле
-        // ничего не добавляет — просто пересчитываем по текущим данным.
+        // Если в поле «Добавить сумму» введено ненулевое значение — оно
+        // учитывается ТОЛЬКО в этом расчёте. Пустое/нулевое поле ничего
+        // не добавляет и не остаётся в портфеле "навсегда".
         const pendingAmount = additionalInvestment > 0 ? additionalInvestment : 0;
-        const newAccumulated = accumulatedAdditional + pendingAmount;
-        const newEffectiveTotal = portfolioValue + newAccumulated;
+        const newTotal = portfolioValue + pendingAmount;
 
         if (pendingAmount > 0) {
-          setAccumulatedAdditional(newAccumulated);
           setAdditionalInvestment(null);
         }
 
         setTimeout(() => {
-          setCalculatedTotalValue(newEffectiveTotal);
+          setCalculatedTotalValue(newTotal);
           setIsCalculated(true);
           setIsCalculating(false);
           setAnimationKey(prev => prev + 1);
           setHighlightCards(true);
           setTimeout(() => setHighlightCards(false), 800);
         }, 400);
-      }, [additionalInvestment, accumulatedAdditional, portfolioValue]);
+      }, [additionalInvestment, portfolioValue]);
 
       useEffect(() => { handleRefreshPrices(); }, []);
 
@@ -766,7 +765,7 @@
 
       const totalAdjustmentValue = analysis.reduce((sum, a) => sum + Math.abs(a.adjustmentValue), 0);
       const onTargetCount = analysis.filter(a => Math.abs(a.currentPercent - a.targetPercent) < 1).length;
-      const canCalculate = (portfolioValue > 0 || accumulatedAdditional > 0 || additionalInvestment > 0) && assets.length > 0 && !isCalculating;
+      const canCalculate = (portfolioValue > 0 || additionalInvestment > 0) && assets.length > 0 && !isCalculating;
 
       // ========================================================================
       // RENDER
