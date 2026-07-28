@@ -590,6 +590,9 @@
      * @param {number} props.totalAssetCount - Общее количество активов
      * @param {Function} props.onAdditionalInvestmentChange - Колбэк изменения добавляемой суммы
      * @param {boolean} props.highlight - Флаг анимации подсветки
+     *
+     * Сумма из поля «Добавить сумму» применяется к портфелю не сразу,
+     * а при нажатии кнопки «Рассчитать» (см. handleCalculate).
      */
     function PortfolioHeaderCards({
       portfolioValue,
@@ -598,7 +601,6 @@
       onTargetCount,
       totalAssetCount,
       onAdditionalInvestmentChange,
-      onApplyInvestment,
       highlight,
     }) {
       return (
@@ -611,29 +613,12 @@
           </div>
             <div className="bg-gradient-to-br from-purple-50 to-purple-100 rounded-lg p-4 border border-purple-200">
               <div className="text-sm text-purple-600 font-medium mb-1">Добавить сумму</div>
-              <div className="flex items-center gap-2">
-                <NumericInput
-                  value={additionalInvestment}
-                  onChange={onAdditionalInvestmentChange}
-                  className="flex-1 text-2xl font-bold text-purple-900 bg-transparent border-b-2 border-purple-300 focus:outline-none focus:border-purple-600 px-1 py-0.5"
-                  placeholder="0.00"
-                />
-                <button
-                  onClick={onApplyInvestment}
-                  disabled={!additionalInvestment}
-                  className={`p-2 rounded transition-colors flex-shrink-0 ${
-                    additionalInvestment 
-                      ? 'text-slate-500 hover:text-blue-600 hover:bg-blue-50' 
-                      : 'text-slate-300 cursor-not-allowed'
-                  }`}
-                  title={additionalInvestment 
-                    ? "Применить сумму к портфелю" 
-                    : "Введите сумму для применения"
-                  }
-                >
-                  ➕
-                </button>
-              </div>
+              <NumericInput
+                value={additionalInvestment}
+                onChange={onAdditionalInvestmentChange}
+                className="w-full text-2xl font-bold text-purple-900 bg-transparent border-b-2 border-purple-300 focus:outline-none focus:border-purple-600 px-1 py-0.5"
+                placeholder="0.00"
+              />
           </div>
           <div className="bg-gradient-to-br from-emerald-50 to-emerald-100 rounded-lg p-4 border border-emerald-200">
             <div className="text-sm text-emerald-600 font-medium mb-1">В целевых пропорциях</div>
@@ -748,25 +733,30 @@
         setAssets(prevAssets => PortfolioCalculator.distributeTargets(prevAssets));
       }, []);
 
-      const handleApplyInvestment = useCallback(() => {
-        if (additionalInvestment > 0) {
-          setAccumulatedAdditional(prev => prev + additionalInvestment);
-          setAdditionalInvestment(null);
-          resetCalculation();
-        }
-      }, [additionalInvestment, resetCalculation]);
-
       const handleCalculate = useCallback(() => {
         setIsCalculating(true);
+
+        // Если в поле «Добавить сумму» введено ненулевое значение — переносим
+        // его в накопленную добавку и очищаем поле. Пустое/нулевое поле
+        // ничего не добавляет — просто пересчитываем по текущим данным.
+        const pendingAmount = additionalInvestment > 0 ? additionalInvestment : 0;
+        const newAccumulated = accumulatedAdditional + pendingAmount;
+        const newEffectiveTotal = portfolioValue + newAccumulated;
+
+        if (pendingAmount > 0) {
+          setAccumulatedAdditional(newAccumulated);
+          setAdditionalInvestment(null);
+        }
+
         setTimeout(() => {
-          setCalculatedTotalValue(effectiveTotalValue);
+          setCalculatedTotalValue(newEffectiveTotal);
           setIsCalculated(true);
           setIsCalculating(false);
           setAnimationKey(prev => prev + 1);
           setHighlightCards(true);
           setTimeout(() => setHighlightCards(false), 800);
         }, 400);
-      }, [effectiveTotalValue]);
+      }, [additionalInvestment, accumulatedAdditional, portfolioValue]);
 
       useEffect(() => { handleRefreshPrices(); }, []);
 
@@ -776,7 +766,7 @@
 
       const totalAdjustmentValue = analysis.reduce((sum, a) => sum + Math.abs(a.adjustmentValue), 0);
       const onTargetCount = analysis.filter(a => Math.abs(a.currentPercent - a.targetPercent) < 1).length;
-      const canCalculate = (portfolioValue > 0 || accumulatedAdditional > 0) && assets.length > 0 && !isCalculating;
+      const canCalculate = (portfolioValue > 0 || accumulatedAdditional > 0 || additionalInvestment > 0) && assets.length > 0 && !isCalculating;
 
       // ========================================================================
       // RENDER
@@ -802,7 +792,6 @@
               onTargetCount={onTargetCount}
               totalAssetCount={analysis.length}
               onAdditionalInvestmentChange={handleAdditionalInvestmentChange}
-              onApplyInvestment={handleApplyInvestment}
               highlight={highlightCards}
             />
 
@@ -844,7 +833,7 @@
                 )}
 
                 {/* Подсказка — только если есть данные для расчёта */}
-                {!isCalculated && effectiveTotalValue > 0 && (
+                {!isCalculated && (effectiveTotalValue > 0 || additionalInvestment > 0) && (
                   <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg text-blue-800 text-sm">
                     💡 Изменены данные. Нажмите <strong>«Рассчитать»</strong> для обновления результатов ребалансировки.
                   </div>
