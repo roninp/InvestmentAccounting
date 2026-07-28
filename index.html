@@ -526,10 +526,19 @@
           {/* Купить/Продать — вычисляемое поле */}
           <td className={`px-2 sm:px-4 py-3 text-right font-mono font-medium ${analysis ? getAdjustmentColor(analysis.adjustment) : ''}`}>
             {analysis ? (
-              <>
-                <div>{analysis.adjustment > 0 ? '+' : ''}{Math.round(analysis.adjustment)}</div>
-                <div className="text-xs mt-1">{analysis.adjustmentValue > 0 ? '+' : ''}{analysis.adjustmentValue.toFixed(2)} ₽</div>
-              </>
+              <div className="flex items-center justify-end gap-1.5">
+                <div className="flex flex-col items-end">
+                  <div>{analysis.adjustment > 0 ? '+' : ''}{Math.round(analysis.adjustment)}</div>
+                  <div className="text-xs mt-1">{analysis.adjustmentValue > 0 ? '+' : ''}{analysis.adjustmentValue.toFixed(2)} ₽</div>
+                </div>
+                <button
+                  onClick={() => onUpdate({ ...asset, quantity: Math.round(analysis.requiredQuantity) })}
+                  className="p-1.5 rounded-full bg-blue-100 text-blue-700 hover:bg-blue-200 transition-colors flex-shrink-0"
+                  title="Применить требуемое количество"
+                >
+                  ⬇
+                </button>
+              </div>
             ) : (
               <div className="text-slate-400">—</div>
             )}
