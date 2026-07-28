@@ -571,15 +571,14 @@
     }
 
     /**
-     * Карточки сводки портфеля с редактируемыми полями.
+     * Карточки сводки портфеля.
      *
      * @param {Object} props
-     * @param {number} props.portfolioValue - Текущая стоимость портфеля
+     * @param {number} props.portfolioValue - Текущая стоимость активов (производная, нередактируемая)
      * @param {number} props.additionalInvestment - Добавляемая сумма
      * @param {number} props.totalAdjustmentValue - Сумма абсолютных отклонений
      * @param {number} props.onTargetCount - Количество активов в целевых пропорциях
      * @param {number} props.totalAssetCount - Общее количество активов
-     * @param {Function} props.onPortfolioValueChange - Колбэк изменения стоимости
      * @param {Function} props.onAdditionalInvestmentChange - Колбэк изменения добавляемой суммы
      * @param {boolean} props.highlight - Флаг анимации подсветки
      */
@@ -589,7 +588,6 @@
       totalAdjustmentValue,
       onTargetCount,
       totalAssetCount,
-      onPortfolioValueChange,
       onAdditionalInvestmentChange,
       onApplyInvestment,
       highlight,
@@ -598,12 +596,9 @@
         <div className={`grid grid-cols-1 sm:grid-cols-3 gap-4 mb-6 ${highlight ? 'animate-highlight' : ''}`}>
           <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-4 border border-blue-200">
             <div className="text-sm text-blue-600 font-medium mb-1">Стоимость активов</div>
-            <NumericInput
-              value={portfolioValue}
-              onChange={onPortfolioValueChange}
-              className="w-full text-2xl font-bold text-blue-900 bg-transparent border-b-2 border-blue-300 focus:outline-none focus:border-blue-600 px-1 py-0.5"
-              placeholder="0.00"
-            />
+            <div className="w-full text-2xl font-bold text-blue-900 px-1 py-0.5">
+              {portfolioValue.toFixed(2)} ₽
+            </div>
           </div>
             <div className="bg-gradient-to-br from-purple-50 to-purple-100 rounded-lg p-4 border border-purple-200">
               <div className="text-sm text-purple-600 font-medium mb-1">Добавить сумму</div>
@@ -650,8 +645,8 @@
       // ========================================================================
 
       const [assets, setAssets] = useState([]);
-      const [portfolioValue, setPortfolioValue] = useState(null);
       const [additionalInvestment, setAdditionalInvestment] = useState(null);
+      const [accumulatedAdditional, setAccumulatedAdditional] = useState(0);
       const [loading, setLoading] = useState(false);
       const [error, setError] = useState(null);
       const [nextId, setNextId] = useState(1);
@@ -667,7 +662,8 @@
       // DERIVED
       // ========================================================================
 
-      const effectiveTotalValue = (portfolioValue || 0) + (additionalInvestment || 0);
+      const portfolioValue = assets.reduce((sum, a) => sum + (a.quantity * a.price), 0);
+      const effectiveTotalValue = portfolioValue + accumulatedAdditional;
 
       const analysis = useMemo(() => {
         if (!isCalculated) return [];
@@ -716,11 +712,6 @@
         resetCalculation();
       }, [assets.length, resetCalculation]);
 
-      const handlePortfolioValueChange = useCallback((value) => {
-        setPortfolioValue(value);
-        resetCalculation();
-      }, [resetCalculation]);
-
       const handleAdditionalInvestmentChange = useCallback((value) => {
         setAdditionalInvestment(value);
         resetCalculation();
@@ -750,7 +741,7 @@
 
       const handleApplyInvestment = useCallback(() => {
         if (additionalInvestment > 0) {
-          setPortfolioValue(prev => (prev || 0) + additionalInvestment);
+          setAccumulatedAdditional(prev => prev + additionalInvestment);
           setAdditionalInvestment(null);
           resetCalculation();
         }
@@ -776,7 +767,7 @@
 
       const totalAdjustmentValue = analysis.reduce((sum, a) => sum + Math.abs(a.adjustmentValue), 0);
       const onTargetCount = analysis.filter(a => Math.abs(a.currentPercent - a.targetPercent) < 1).length;
-      const canCalculate = effectiveTotalValue > 0 && assets.length > 0 && !isCalculating;
+      const canCalculate = (portfolioValue > 0 || accumulatedAdditional > 0) && assets.length > 0 && !isCalculating;
 
       // ========================================================================
       // RENDER
@@ -801,7 +792,6 @@
               totalAdjustmentValue={totalAdjustmentValue}
               onTargetCount={onTargetCount}
               totalAssetCount={analysis.length}
-              onPortfolioValueChange={handlePortfolioValueChange}
               onAdditionalInvestmentChange={handleAdditionalInvestmentChange}
               onApplyInvestment={handleApplyInvestment}
               highlight={highlightCards}
