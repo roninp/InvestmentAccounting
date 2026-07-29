@@ -651,6 +651,13 @@
       const [highlightCards, setHighlightCards] = useState(false);
       const [animationKey, setAnimationKey] = useState(0);
 
+      // Состояние результатов расчёта — не сбрасывается при возврате кнопки
+      const [hasResults, setHasResults] = useState(false);
+      const [lastAnalysis, setLastAnalysis] = useState([]);
+
+      // Флаг изменения данных — true при реальных изменениях, false после расчёта
+      const [dataChanged, setDataChanged] = useState(false);
+
       // ========================================================================
       // DERIVED
       // ========================================================================
@@ -665,6 +672,13 @@
         return PortfolioCalculator.analyzePortfolio(assets, calculatedTotalValue);
       }, [assets, calculatedTotalValue, isCalculated]);
 
+      // Результаты для отображения: свежий расчёт (isCalculated) или последний сохранённый (hasResults)
+      const displayAnalysis = useMemo(() => {
+        if (isCalculated) return analysis;
+        if (hasResults) return lastAnalysis;
+        return [];
+      }, [isCalculated, analysis, hasResults, lastAnalysis]);
+
       // Валидация с учётом shouldShow — не показываем, если пользователь ещё не вводил проценты
       const portfolioValidation = useMemo(() => AssetValidator.validatePortfolio(assets), [assets]);
 
@@ -672,7 +686,12 @@
       // HELPERS
       // ========================================================================
 
-      const resetCalculation = useCallback(() => { setIsCalculated(false); }, []);
+      const resetCalculation = useCallback(() => {
+        setIsCalculated(false);
+        setHasResults(false);
+        setLastAnalysis([]);
+        setDataChanged(true);
+      }, []);
 
       // ========================================================================
       // HANDLERS
@@ -734,6 +753,8 @@
         setAssets(prevAssets => PortfolioCalculator.distributeTargets(prevAssets));
       }, []);
 
+      const resetCalculatedTimerRef = useRef(null);
+
       const handleCalculate = useCallback(() => {
         setIsCalculating(true);
 
@@ -747,6 +768,12 @@
           setAdditionalInvestment(null);
         }
 
+        // Отмена предыдущего таймера автовозврата кнопки, если пользователь
+        // нажал «Рассчитать» снова до истечения 2 секунд.
+        if (resetCalculatedTimerRef.current) {
+          clearTimeout(resetCalculatedTimerRef.current);
+        }
+
         setTimeout(() => {
           setCalculatedTotalValue(newTotal);
           setIsCalculated(true);
@@ -754,8 +781,23 @@
           setAnimationKey(prev => prev + 1);
           setHighlightCards(true);
           setTimeout(() => setHighlightCards(false), 800);
+
+          // Сбрасываем флаг изменений — расчёт выполнен
+          setDataChanged(false);
+
+          // Сохраняем результаты расчёта — они останутся даже после сброса кнопки
+          const newAnalysis = PortfolioCalculator.analyzePortfolio(assets, newTotal);
+          setLastAnalysis(newAnalysis);
+          setHasResults(true);
+
+          // Через 2 секунды кнопка плавно вернётся в состояние «Рассчитать»,
+          // но результаты расчёта останутся на экране
+          resetCalculatedTimerRef.current = setTimeout(() => {
+            setIsCalculated(false);
+            resetCalculatedTimerRef.current = null;
+          }, 2000);
         }, 400);
-      }, [additionalInvestment, portfolioValue]);
+      }, [additionalInvestment, portfolioValue, assets]);
 
       useEffect(() => { handleRefreshPrices(); }, []);
 
@@ -763,8 +805,8 @@
       // UI VALUES
       // ========================================================================
 
-      const totalAdjustmentValue = analysis.reduce((sum, a) => sum + Math.abs(a.adjustmentValue), 0);
-      const onTargetCount = analysis.filter(a => Math.abs(a.currentPercent - a.targetPercent) < 1).length;
+      const totalAdjustmentValue = displayAnalysis.reduce((sum, a) => sum + Math.abs(a.adjustmentValue), 0);
+      const onTargetCount = displayAnalysis.filter(a => Math.abs(a.currentPercent - a.targetPercent) < 1).length;
       const canCalculate = (portfolioValue > 0 || additionalInvestment > 0) && assets.length > 0 && !isCalculating;
 
       // ========================================================================
@@ -789,7 +831,7 @@
               additionalInvestment={additionalInvestment}
               totalAdjustmentValue={totalAdjustmentValue}
               onTargetCount={onTargetCount}
-              totalAssetCount={analysis.length}
+              totalAssetCount={displayAnalysis.length}
               onAdditionalInvestmentChange={handleAdditionalInvestmentChange}
               highlight={highlightCards}
             />
@@ -810,7 +852,7 @@
                         <AssetRow
                           key={asset.id}
                           asset={asset}
-                          analysis={analysis.find(a => a.id === asset.id)}
+                          analysis={displayAnalysis.find(a => a.id === asset.id)}
                           onUpdate={handleUpdateAsset}
                           onRemove={handleRemoveAsset}
                           onDistributeEvenly={handleDistributeEvenly}
@@ -831,8 +873,8 @@
                   </div>
                 )}
 
-                {/* Подсказка — только если есть данные для расчёта */}
-                {!isCalculated && (effectiveTotalValue > 0 || additionalInvestment > 0) && (
+                {/* Подсказка — только если данные действительно изменились */}
+                {dataChanged && !isCalculated && (effectiveTotalValue > 0 || additionalInvestment > 0) && (
                   <div className="mt-4 p-4 bg-blue-50 border border-blue-200 rounded-lg text-blue-800 text-sm">
                     💡 Изменены данные. Нажмите <strong>«Рассчитать»</strong> для обновления результатов ребалансировки.
                   </div>
