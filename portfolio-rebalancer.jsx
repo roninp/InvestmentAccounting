@@ -230,6 +230,157 @@ class AssetValidator {
 }
 
 // ============================================================================
+// PERSISTENCE LAYER — Сохранение портфеля на стороне клиента
+// ============================================================================
+
+/**
+ * Сервис сохранения портфеля — отвечает за чтение/запись в localStorage
+ * и экспорт/импорт JSON-файлов.
+ */
+class PortfolioStorage {
+  /** @type {string} Ключ для localStorage */
+  static STORAGE_KEY = 'portfolioRebalancerData';
+
+  /** @type {number} Версия формата данных (для будущей миграции) */
+  static DATA_VERSION = 1;
+
+  /**
+   * Сохранить данные портфеля в localStorage.
+   * @param {Object} data
+   * @param {Array} data.assets - Массив активов
+   * @param {number} data.nextId - Следующий id
+   * @param {number|null} data.additionalInvestment - Добавочная сумма
+   */
+  static save(data) {
+    try {
+      const payload = {
+        version: this.DATA_VERSION,
+        savedAt: new Date().toISOString(),
+        assets: data.assets,
+        nextId: data.nextId,
+        additionalInvestment: data.additionalInvestment,
+      };
+      localStorage.setItem(this.STORAGE_KEY, JSON.stringify(payload));
+    } catch (err) {
+      console.warn('[PortfolioStorage] Ошибка сохранения:', err.message);
+    }
+  }
+
+  /**
+   * Загрузить данные портфеля из localStorage.
+   * Возвращает null, если данных нет, они повреждены или невалидны.
+   * @returns {Object|null} Данные портфеля или null
+   */
+  static load() {
+    try {
+      const raw = localStorage.getItem(this.STORAGE_KEY);
+      if (!raw) return null;
+      const data = JSON.parse(raw);
+      if (!this.validate(data)) return null;
+      return {
+        assets: data.assets,
+        nextId: data.nextId,
+        additionalInvestment: data.additionalInvestment ?? null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Удалить сохранённые данные из localStorage.
+   */
+  static clear() {
+    try {
+      localStorage.removeItem(this.STORAGE_KEY);
+    } catch {
+      // Игнорируем ошибки очистки
+    }
+  }
+
+  /**
+   * Скачать данные портфеля как JSON-файл.
+   * @param {Object} data - Данные для экспорта
+   */
+  static exportToFile(data) {
+    try {
+      const payload = {
+        version: this.DATA_VERSION,
+        exportedAt: new Date().toISOString(),
+        assets: data.assets,
+        nextId: data.nextId,
+        additionalInvestment: data.additionalInvestment,
+      };
+      const json = JSON.stringify(payload, null, 2);
+      const blob = new Blob([json], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+
+      const date = new Date().toISOString().slice(0, 10);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `portfolio_${date}.json`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      console.error('[PortfolioStorage] Ошибка экспорта:', err.message);
+      throw err;
+    }
+  }
+
+  /**
+   * Прочитать и проверить JSON-файл импорта.
+   * Возвращает данные или выбрасывает ошибку при невалидном формате.
+   * @param {File} file - Файл из <input type="file">
+   * @returns {Promise<Object>} Данные портфеля
+   * @throws {Error} При ошибке чтения или невалидной структуре
+   */
+  static async importFromFile(file) {
+    const text = await new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve(e.target.result);
+      reader.onerror = () => reject(new Error('Ошибка чтения файла'));
+      reader.readAsText(file);
+    });
+
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new Error('Файл не является корректным JSON');
+    }
+
+    if (!this.validate(data)) {
+      throw new Error('Неверный формат файла: отсутствуют обязательные поля или повреждена структура');
+    }
+
+    return {
+      assets: data.assets,
+      nextId: data.nextId,
+      additionalInvestment: data.additionalInvestment ?? null,
+    };
+  }
+
+  /**
+   * Проверить структуру загруженных данных.
+   * @param {Object} data - Распарсенные данные
+   * @returns {boolean} true — данные валидны
+   */
+  static validate(data) {
+    if (!data || typeof data !== 'object') return false;
+    if (!Array.isArray(data.assets)) return false;
+    return data.assets.every(a =>
+      typeof a.id === 'number' &&
+      typeof a.ticker === 'string' &&
+      typeof a.quantity === 'number' &&
+      typeof a.price === 'number' &&
+      typeof a.targetPercent === 'number'
+    );
+  }
+}
+
+// ============================================================================
 // UI LAYER - React компоненты
 // ============================================================================
 
@@ -507,14 +658,60 @@ export default function PortfolioRebalancer() {
   // STATE
   // ========================================================================
 
-  const [assets, setAssets] = useState([
+  const savedData = useMemo(() => PortfolioStorage.load(), []);
+  const [assets, setAssets] = useState(() => savedData?.assets || [
     { id: 1, ticker: 'SBER', quantity: 10, price: 245.50, targetPercent: 50 },
     { id: 2, ticker: 'GAZP', quantity: 20, price: 145.20, targetPercent: 50 },
   ]);
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [nextId, setNextId] = useState(3);
+  const [nextId, setNextId] = useState(() => savedData?.nextId ?? 3);
+  
+  /** Автосохранение портфеля в localStorage при любом изменении данных */
+  useEffect(() => {
+    PortfolioStorage.save({ assets, nextId, additionalInvestment: null });
+  }, [assets, nextId]);
+
+  /** Скрытая ref для импорта файла */
+  const fileInputRef = useRef(null);
+
+  /** Обработчик экспорта */
+  const handleExport = useCallback(() => {
+    try {
+      PortfolioStorage.exportToFile({ assets, nextId, additionalInvestment: null });
+    } catch (err) {
+      setError(err.message);
+    }
+  }, [assets, nextId]);
+
+  /** Обработчик импорта */
+  const handleImport = useCallback(async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      const data = await PortfolioStorage.importFromFile(file);
+      setAssets(data.assets);
+      setNextId(data.nextId);
+      resetCalculation();
+      setError(null);
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
+  }, [resetCalculation]);
+
+  /** Обработчик сброса — очистка localStorage и состояния */
+  const handleReset = useCallback(() => {
+    PortfolioStorage.clear();
+    setAssets([]);
+    setNextId(1);
+    setCalculatedTotalValue(0);
+    setIsCalculated(false);
+    setEmptyTargetIds(new Set());
+    setError(null);
+  }, []);
 
   // Управление расчётом
   const [isCalculated, setIsCalculated] = useState(false);
@@ -551,25 +748,29 @@ export default function PortfolioRebalancer() {
     const validation = AssetValidator.validate(updatedAsset);
     if (!validation.isValid) { setError(validation.errors[0]); return; }
     setAssets(prevAssets => {
+      const oldAsset = prevAssets.find(a => a.id === updatedAsset.id);
       const updated = prevAssets.map(a => a.id === updatedAsset.id ? updatedAsset : a);
-      return PortfolioCalculator.distributeTargets(updated);
+      // Сбрасываем расчёт при изменении тикера или целевого процента
+      if (oldAsset && (oldAsset.ticker !== updatedAsset.ticker || oldAsset.targetPercent !== updatedAsset.targetPercent)) {
+        setTimeout(() => resetCalculation(), 0);
+      }
+      return updated;
     });
     setError(null);
-  }, []);
+  }, [resetCalculation]);
 
   const handleAddAsset = useCallback(() => {
     setNextId(prev => prev + 1);
-    setAssets(prevAssets => {
-      const newAssets = [...prevAssets, { id: nextId, ticker: '', quantity: 0, price: 0, targetPercent: 0 }];
-      return PortfolioCalculator.distributeTargets(newAssets);
-    });
+    setAssets(prevAssets => [...prevAssets, { id: nextId, ticker: '', quantity: 0, price: 0, targetPercent: 0 }]);
     setError(null);
-  }, [nextId]);
+    resetCalculation();
+  }, [nextId, resetCalculation]);
 
   const handleRemoveAsset = useCallback((id) => {
     if (assets.length <= 2) return;
-    setAssets(prevAssets => PortfolioCalculator.distributeTargets(prevAssets.filter(a => a.id !== id)));
-  }, [assets.length]);
+    setAssets(prevAssets => prevAssets.filter(a => a.id !== id));
+    resetCalculation();
+  }, [assets.length, resetCalculation]);
 
   const handleRefreshPrices = useCallback(async () => {
     setLoading(true);
@@ -742,6 +943,34 @@ export default function PortfolioRebalancer() {
           >
             <Plus size={18} />
             Добавить актив ({assets.length}/100)
+          </button>
+        </div>
+
+        {/* Панель сохранения / экспорта / импорта */}
+        <div className="mt-6 flex gap-3">
+          <button
+            onClick={handleExport}
+            disabled={assets.length === 0}
+            className="flex items-center gap-2 px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:bg-slate-400 disabled:cursor-not-allowed transition-colors font-medium"
+          >
+            💾 Сохранить в файл
+          </button>
+          <label className="flex items-center gap-2 px-4 py-2 bg-amber-600 text-white rounded-lg hover:bg-amber-700 transition-colors font-medium cursor-pointer">
+            📂 Загрузить из файла
+            <input
+              type="file"
+              ref={fileInputRef}
+              accept=".json"
+              onChange={handleImport}
+              className="hidden"
+            />
+          </label>
+          <button
+            onClick={handleReset}
+            disabled={assets.length === 0}
+            className="flex items-center gap-2 px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 disabled:bg-slate-400 disabled:cursor-not-allowed transition-colors font-medium"
+          >
+            🗑️ Сбросить всё
           </button>
         </div>
 
