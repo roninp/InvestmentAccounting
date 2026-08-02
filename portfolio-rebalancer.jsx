@@ -11,6 +11,26 @@ import { TrendingUp, Plus, Trash2, RefreshCw, Calculator, CheckCircle, Clock, Sc
  */
 class PortfolioCalculator {
   /**
+   * Округление денежной суммы строго вниз до сотых долей.
+   * Согласно правилам ребалансировки: все денежные значения округляются вниз.
+   * @param {number} value - Исходное значение
+   * @returns {number} Округлённое значение (2 знака после запятой)
+   */
+  static floorMoney(value) {
+    return Math.floor(value * 100) / 100;
+  }
+
+  /**
+   * Округление количества активов строго вниз до целого числа.
+   * Согласно правилам ребалансировки: количество активов округляется вниз.
+   * @param {number} value - Исходное значение
+   * @returns {number} Округлённое значение (целое число)
+   */
+  static floorQuantity(value) {
+    return Math.floor(value);
+  }
+
+  /**
    * Расчет суммы портфеля
    * @param {Array} assets - Массив активов
    * @returns {number} Сумма quantity * price по всем активам
@@ -31,15 +51,17 @@ class PortfolioCalculator {
   }
 
   /**
-   * Расчет требуемого количества активов для достижения целевого процента
+   * Расчет требуемого количества активов для достижения целевого процента.
+   * Количество округляется строго вниз до целого числа.
    * @param {Object} asset - Данные актива
    * @param {number} targetPercent - Целевой процент
    * @param {number} totalValue - Общая стоимость портфеля для расчёта
-   * @returns {number} Требуемое количество единиц актива
+   * @returns {number} Требуемое количество единиц актива (целое, округлённое вниз)
    */
   static calculateRequiredQuantity(asset, targetPercent, totalValue) {
-    if (totalValue === 0) return 0;
-    return (targetPercent / 100) * totalValue / asset.price;
+    if (totalValue === 0 || asset.price === 0) return 0;
+    const raw = (targetPercent / 100) * totalValue / asset.price;
+    return this.floorQuantity(raw);
   }
 
   /**
@@ -125,34 +147,67 @@ class PortfolioCalculator {
   }
 
   /**
-   * Полный анализ портфеля с учётом эффективной стоимости
+   * Полный анализ портфеля с учётом эффективной стоимости и лимита бюджета.
+   * Активы, которые нужно докупить, ограничены доступным бюджетом.
+   * Сумма покупок не может превышать availableBudget.
+   *
    * @param {Array} assets - Массив активов
    * @param {number} effectiveTotalValue - Эффективная стоимость портфеля (портфель + добавка)
-   * @returns {Array} Массив активов с расчётными полями
+   * @param {number} [availableBudget] - Доступный бюджет на докупку (если не указан — без ограничения)
+   * @returns {{ analysis: Array, cashSpent: number }} Объект с массивом анализа и суммой потраченных денег
    */
-  static analyzePortfolio(assets, effectiveTotalValue = 0) {
+  static analyzePortfolio(assets, effectiveTotalValue = 0, availableBudget) {
     const currentPercentages = this.calculatePercentages(assets);
+    const totalPortfolioValue = this.calculateTotalValue(assets);
+    const effectiveValue = effectiveTotalValue > 0 ? effectiveTotalValue : totalPortfolioValue;
 
-    return assets.map((asset, index) => {
-      const currentPercent = currentPercentages[index];
-      const requiredQuantity = this.calculateRequiredQuantity(
-        asset,
-        asset.targetPercent,
-        effectiveTotalValue > 0 ? effectiveTotalValue : this.calculateTotalValue(assets)
-      );
+    // Предварительный расчёт без ограничений
+    const rawAnalysis = assets.map((asset, index) => ({
+      asset,
+      currentPercent: currentPercentages[index],
+      requiredQuantity: this.calculateRequiredQuantity(asset, asset.targetPercent, effectiveValue),
+    }));
+
+    // Вычисляем adjustment и adjustmentValue
+    let budget = availableBudget != null ? availableBudget : Infinity;
+    let cashSpent = 0;
+
+    const analysis = rawAnalysis.map(({ asset, currentPercent, requiredQuantity }) => {
       const adjustment = this.calculateAdjustment(asset.quantity, requiredQuantity);
+      let finalAdjustment = adjustment;
+      let finalRequiredQuantity = requiredQuantity;
+
+      // Если нужно докупить и бюджет ограничен
+      if (adjustment > 0 && availableBudget != null) {
+        const desiredCost = adjustment * asset.price;
+        if (desiredCost > budget) {
+          // Ограничиваем покупку оставшимся бюджетом
+          const affordableQuantity = this.floorQuantity(budget / asset.price);
+          finalAdjustment = affordableQuantity;
+          finalRequiredQuantity = asset.quantity + affordableQuantity;
+          const spent = this.floorMoney(affordableQuantity * asset.price);
+          budget -= spent;
+          cashSpent += spent;
+        } else {
+          const spent = this.floorMoney(desiredCost);
+          budget -= spent;
+          cashSpent += spent;
+        }
+      }
 
       return {
         ...asset,
         currentValue: asset.quantity * asset.price,
         currentPercent,
-        requiredQuantity,
-        adjustment,
-        adjustmentValue: adjustment * asset.price,
+        requiredQuantity: finalRequiredQuantity,
+        adjustment: finalAdjustment,
+        adjustmentValue: this.floorMoney(finalAdjustment * asset.price),
         isOverweight: currentPercent > asset.targetPercent,
         isUnderweight: currentPercent < asset.targetPercent,
       };
     });
+
+    return { analysis, cashSpent: this.floorMoney(cashSpent) };
   }
 }
 
@@ -259,6 +314,7 @@ class PortfolioStorage {
         assets: data.assets,
         nextId: data.nextId,
         additionalInvestment: data.additionalInvestment,
+        cashBalance: data.cashBalance ?? 0,
       };
       localStorage.setItem(this.STORAGE_KEY, JSON.stringify(payload));
     } catch (err) {
@@ -281,6 +337,7 @@ class PortfolioStorage {
         assets: data.assets,
         nextId: data.nextId,
         additionalInvestment: data.additionalInvestment ?? null,
+        cashBalance: data.cashBalance ?? 0,
       };
     } catch {
       return null;
@@ -310,6 +367,7 @@ class PortfolioStorage {
         assets: data.assets,
         nextId: data.nextId,
         additionalInvestment: data.additionalInvestment,
+        cashBalance: data.cashBalance ?? 0,
       };
       const json = JSON.stringify(payload, null, 2);
       const blob = new Blob([json], { type: 'application/json' });
@@ -359,6 +417,7 @@ class PortfolioStorage {
       assets: data.assets,
       nextId: data.nextId,
       additionalInvestment: data.additionalInvestment ?? null,
+      cashBalance: data.cashBalance ?? 0,
     };
   }
 
@@ -626,12 +685,40 @@ function PortfolioHeader() {
 /**
  * Сводка портфеля.
  */
-function PortfolioSummary({ analysis }) {
+function PortfolioSummary({ analysis, cashBalance, additionalCash, onAdditionalCashChange, onAddCash }) {
   const totalValue = PortfolioCalculator.calculateTotalValue(analysis);
   const totalAdjustmentValue = analysis.reduce((sum, a) => sum + Math.abs(a.adjustmentValue), 0);
 
   return (
     <div className="grid grid-cols-3 gap-4 mb-6">
+      {/* Карточка «Деньги» — остаток свободных средств и поле добавления */}
+      <div className="bg-gradient-to-br from-amber-50 to-amber-100 rounded-lg p-4 border border-amber-200">
+        <div className="text-sm text-amber-600 font-medium mb-1">Деньги</div>
+        <div className="text-2xl font-bold text-amber-900 mb-3">{cashBalance.toFixed(2)} ₽</div>
+        <div className="flex gap-2">
+          <input
+            type="text"
+            inputMode="decimal"
+            value={additionalCash === 0 ? '' : String(additionalCash)}
+            onChange={(e) => {
+              const v = e.target.value;
+              if (v === '' || /^\d+\.?\d*$/.test(v) || /^\d*\.?\d+$/.test(v)) {
+                onAdditionalCashChange(v === '' ? 0 : parseFloat(v));
+              }
+            }}
+            className="w-28 px-2 py-1 border border-amber-300 rounded text-sm text-right focus:outline-none focus:ring-2 focus:ring-amber-500"
+            placeholder="Сумма"
+          />
+          <button
+            onClick={onAddCash}
+            disabled={additionalCash <= 0}
+            className="px-3 py-1 bg-amber-600 text-white rounded text-sm hover:bg-amber-700 disabled:bg-amber-300 disabled:cursor-not-allowed transition-colors font-medium"
+          >
+            ➕ Добавить
+          </button>
+        </div>
+      </div>
+
       <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-4 border border-blue-200">
         <div className="text-sm text-blue-600 font-medium mb-1">Стоимость портфеля</div>
         <div className="text-2xl font-bold text-blue-900">{totalValue.toFixed(2)} ₽</div>
@@ -639,12 +726,6 @@ function PortfolioSummary({ analysis }) {
       <div className="bg-gradient-to-br from-purple-50 to-purple-100 rounded-lg p-4 border border-purple-200">
         <div className="text-sm text-purple-600 font-medium mb-1">Требуется ребалансировки</div>
         <div className="text-2xl font-bold text-purple-900">{totalAdjustmentValue.toFixed(2)} ₽</div>
-      </div>
-      <div className="bg-gradient-to-br from-emerald-50 to-emerald-100 rounded-lg p-4 border border-emerald-200">
-        <div className="text-sm text-emerald-600 font-medium mb-1">В целевых пропорциях</div>
-        <div className="text-2xl font-bold text-emerald-900">
-          {analysis.filter(a => Math.abs(a.currentPercent - a.targetPercent) < 1).length}/{analysis.length}
-        </div>
       </div>
     </div>
   );
@@ -667,11 +748,16 @@ export default function PortfolioRebalancer() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [nextId, setNextId] = useState(() => savedData?.nextId ?? 3);
+
+  /** Остаток свободных денежных средств */
+  const [cashBalance, setCashBalance] = useState(() => savedData?.cashBalance ?? 0);
+  /** Вводимая пользователем добавляемая сумма (пока не добавлена в cashBalance) */
+  const [additionalCash, setAdditionalCash] = useState(0);
   
   /** Автосохранение портфеля в localStorage при любом изменении данных */
   useEffect(() => {
-    PortfolioStorage.save({ assets, nextId, additionalInvestment: null });
-  }, [assets, nextId]);
+    PortfolioStorage.save({ assets, nextId, additionalInvestment: null, cashBalance });
+  }, [assets, nextId, cashBalance]);
 
   /** Скрытая ref для импорта файла */
   const fileInputRef = useRef(null);
@@ -679,11 +765,11 @@ export default function PortfolioRebalancer() {
   /** Обработчик экспорта */
   const handleExport = useCallback(() => {
     try {
-      PortfolioStorage.exportToFile({ assets, nextId, additionalInvestment: null });
+      PortfolioStorage.exportToFile({ assets, nextId, additionalInvestment: null, cashBalance });
     } catch (err) {
       setError(err.message);
     }
-  }, [assets, nextId]);
+  }, [assets, nextId, cashBalance]);
 
   /** Обработчик импорта */
   const handleImport = useCallback(async (e) => {
@@ -693,6 +779,8 @@ export default function PortfolioRebalancer() {
       const data = await PortfolioStorage.importFromFile(file);
       setAssets(data.assets);
       setNextId(data.nextId);
+      if (data.cashBalance != null) setCashBalance(data.cashBalance);
+      setAdditionalCash(0);
       resetCalculation();
       setError(null);
     } catch (err) {
@@ -707,6 +795,8 @@ export default function PortfolioRebalancer() {
     PortfolioStorage.clear();
     setAssets([]);
     setNextId(1);
+    setCashBalance(0);
+    setAdditionalCash(0);
     setCalculatedTotalValue(0);
     setIsCalculated(false);
     setEmptyTargetIds(new Set());
@@ -716,6 +806,8 @@ export default function PortfolioRebalancer() {
   // Управление расчётом
   const [isCalculated, setIsCalculated] = useState(false);
   const [calculatedTotalValue, setCalculatedTotalValue] = useState(0);
+  /** Результат анализа после нажатия «Рассчитать» (с учётом бюджета) */
+  const [calculatedAnalysis, setCalculatedAnalysis] = useState(null);
   const [isCalculating, setIsCalculating] = useState(false);
   const [highlightCards, setHighlightCards] = useState(false);
   const [animationKey, setAnimationKey] = useState(0);
@@ -729,8 +821,10 @@ export default function PortfolioRebalancer() {
 
   const analysis = useMemo(() => {
     if (!isCalculated) return [];
-    return PortfolioCalculator.analyzePortfolio(assets, calculatedTotalValue);
-  }, [assets, calculatedTotalValue, isCalculated]);
+    // Используем сохранённый результат последнего нажатия «Рассчитать»
+    // (с учётом бюджета), чтобы данные не менялись при каждом ререндере
+    return calculatedAnalysis ?? [];
+  }, [isCalculated, calculatedAnalysis]);
 
   const portfolioValidation = useMemo(() => AssetValidator.validatePortfolio(assets), [assets]);
 
@@ -789,18 +883,46 @@ export default function PortfolioRebalancer() {
     } finally { setLoading(false); }
   }, [assets, resetCalculation]);
 
+  /** Добавить денежные средства из поля ввода к cashBalance */
+  const handleAddCash = useCallback(() => {
+    if (additionalCash > 0) {
+      setCashBalance(prev => PortfolioCalculator.floorMoney(prev + additionalCash));
+      setAdditionalCash(0);
+    }
+  }, [additionalCash]);
+
   const handleCalculate = useCallback(() => {
     setIsCalculating(true);
-    const totalValue = PortfolioCalculator.calculateTotalValue(assets);
+    const totalPortfolio = PortfolioCalculator.calculateTotalValue(assets);
+    // Эффективная стоимость = портфель + деньги + добавляемая сумма
+    const effectiveTotalValue = totalPortfolio + cashBalance + additionalCash;
+    // Доступный бюджет: имеющиеся деньги + добавляемая сумма
+    const budget = cashBalance + additionalCash;
+
     setTimeout(() => {
-      setCalculatedTotalValue(totalValue);
+      setCalculatedTotalValue(effectiveTotalValue);
+      // Выполняем анализ с ограничением бюджета
+      const { analysis: calculatedAnalysis, cashSpent } = PortfolioCalculator.analyzePortfolio(
+        assets,
+        effectiveTotalValue,
+        budget
+      );
+      // Списываем потраченные деньги: обнуляем additionalCash (она учтена),
+      // вычитаем потраченное из cashBalance
+      setCashBalance(prev => {
+        const totalAvailable = prev + additionalCash;
+        return PortfolioCalculator.floorMoney(totalAvailable - cashSpent);
+      });
+      setAdditionalCash(0);
+      // Обновлённый calculatedAnalysis сохраним через отдельный стейт
+      setCalculatedAnalysis(calculatedAnalysis);
       setIsCalculated(true);
       setIsCalculating(false);
       setAnimationKey(prev => prev + 1);
       setHighlightCards(true);
       setTimeout(() => setHighlightCards(false), 800);
     }, 400);
-  }, [assets]);
+  }, [assets, cashBalance, additionalCash]);
 
   /**
    * Обработчик пустоты поля "Цель" для конкретного актива.
@@ -848,7 +970,13 @@ export default function PortfolioRebalancer() {
       </div>
 
       <div className="max-w-7xl mx-auto px-6 py-8">
-        <PortfolioSummary analysis={analysis} />
+        <PortfolioSummary
+          analysis={analysis}
+          cashBalance={cashBalance}
+          additionalCash={additionalCash}
+          onAdditionalCashChange={setAdditionalCash}
+          onAddCash={handleAddCash}
+        />
 
         {error && (
           <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-800 text-sm">
