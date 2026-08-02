@@ -57,14 +57,23 @@ class PortfolioCalculator {
    * Если все targetPercent равны 0 — делит 100% поровну между всеми.
    * Если есть ненулевые и нулевые — оставшуюся долю (100 - сумма_ненулевых)
    * распределяет поровну между нулевыми. Если все ненулевые — ничего не меняет.
+   * Актив считается нулевым, если его targetPercent === 0 ИЛИ его id находится
+   * в наборе emptyTargetIds (поле "Цель" пустое, фокус ещё не потерян).
    * @param {Array} assets - Массив активов
+   * @param {Set<number>} [emptyTargetIds] - Набор id активов с пустым полем "Цель"
    * @returns {Array} Новый массив с заполненными targetPercent
    */
-  static distributeTargets(assets) {
+  static distributeTargets(assets, emptyTargetIds = new Set()) {
     if (assets.length === 0) return assets;
 
-    const zeroAssets = assets.filter(a => a.targetPercent === 0);
-    const nonzeroAssets = assets.filter(a => a.targetPercent > 0);
+    // Актив считается нулевым, если его цель равна 0, равна null/undefined
+    // (blur очистил поле перед нажатием кнопки) или id в наборе пустых полей
+    const isZeroAsset = (a) =>
+      a.targetPercent === 0 ||
+      a.targetPercent == null ||
+      emptyTargetIds.has(a.id);
+    const zeroAssets = assets.filter(isZeroAsset);
+    const nonzeroAssets = assets.filter(a => !isZeroAsset(a));
 
     // Случай 1: все нулевые — поделить 100% поровну
     if (zeroAssets.length === assets.length) {
@@ -99,7 +108,7 @@ class PortfolioCalculator {
       const equalPart = remaining / zeroAssets.length;
       let zeroIndex = 0;
       return assets.map(asset => {
-        if (asset.targetPercent === 0) {
+        if (isZeroAsset(asset)) {
           if (zeroIndex === zeroAssets.length - 1) {
             const allocated = (zeroAssets.length - 1) * parseFloat(equalPart.toFixed(1));
             return { ...asset, targetPercent: parseFloat((remaining - allocated).toFixed(1)) };
@@ -234,22 +243,27 @@ class AssetValidator {
  * @param {number} props.value - Текущее числовое значение
  * @param {Function} props.onChange - Колбэк с новым числовым значением (number)
  * @param {boolean} [props.isInteger] - Если true — допускает только целые числа
+ * @param {Function} [props.onEmptyChange] - Колбэк, сообщающий о пустоте поля (true — поле пустое)
  * @param {Object} props.inputProps - Остальные атрибуты для <input>
  */
-function NumericInput({ value, onChange, isInteger = false, ...inputProps }) {
+function NumericInput({ value, onChange, isInteger = false, onEmptyChange, ...inputProps }) {
   const [rawValue, setRawValue] = useState(String(value));
 
-  // Синхронизация при изменении value извне (например, при сбросе расчёта)
-  const handleExternalChange = useCallback(() => {
-    setRawValue(String(value));
-  }, [value]);
+  // Актуальный колбэк onEmptyChange через ref — исключает лишние срабатывания
+  // эффекта при каждом ререндере родителя (инлайн-стрелка в AssetRow создаётся заново).
+  const onEmptyChangeRef = useRef(onEmptyChange);
+  onEmptyChangeRef.current = onEmptyChange;
 
-  // Используем useRef, чтобы избежать замыкания в useEffect
-  const externalChangeRef = useRef(handleExternalChange);
-  externalChangeRef.current = handleExternalChange;
-
+  // Синхронизация при изменении value извне (например, после распределения целей).
+  // Зависим ТОЛЬКО от value: изменение onEmptyChange не должно перезаписывать
+  // введённое пользователем значение (иначе стёртое число вернётся обратно).
   useEffect(() => {
-    externalChangeRef.current();
+    setRawValue(String(value));
+    // Поле заполнено извне ненулевым значением — сообщаем родителю,
+    // что актив больше не пустой (id удаляется из набора emptyTargetIds)
+    if (value != null && value !== 0) {
+      if (onEmptyChangeRef.current) onEmptyChangeRef.current(false);
+    }
   }, [value]);
 
   /**
@@ -261,11 +275,15 @@ function NumericInput({ value, onChange, isInteger = false, ...inputProps }) {
       // Только целые числа или пустая строка
       if (v === '' || /^\d+$/.test(v)) {
         setRawValue(v);
+        // Сообщаем родителю о пустоте поля (для кнопки распределения целей)
+        if (onEmptyChange) onEmptyChange(v === '');
       }
     } else {
       // Числа с плавающей точкой или пустая строка
       if (v === '' || /^\d+\.?\d*$/.test(v) || /^\d*\.?\d+$/.test(v)) {
         setRawValue(v);
+        // Сообщаем родителю о пустоте поля (для кнопки распределения целей)
+        if (onEmptyChange) onEmptyChange(v === '');
       }
     }
   };
@@ -279,12 +297,17 @@ function NumericInput({ value, onChange, isInteger = false, ...inputProps }) {
     if (trimmed === '') {
       onChange(0);
       setRawValue('0');
+      // Не вызываем onEmptyChange(false), чтобы id актива остался в наборе
+      // пустых полей — иначе при нажатии кнопки ⚖️ (blur срабатывает раньше click)
+      // актив потеряет статус «нулевого» и распределение не выполнится.
       return;
     }
     const parsed = isInteger ? parseInt(trimmed, 10) : parseFloat(trimmed);
     const num = isNaN(parsed) ? 0 : parsed;
     onChange(num);
     setRawValue(String(num));
+    // После потери фокуса поле всегда непустое (показывает число)
+    if (onEmptyChange) onEmptyChange(false);
   };
 
   return (
@@ -310,11 +333,12 @@ function NumericInput({ value, onChange, isInteger = false, ...inputProps }) {
  * @param {Function} props.onUpdate - Колбэк обновления
  * @param {Function} props.onRemove - Колбэк удаления
  * @param {Function} props.onDistributeEqually - Колбэк распределения целей поровну
+ * @param {Function} props.onTargetEmptyChange - Колбэк, сообщающий о пустоте поля "Цель" (id, isEmpty)
  * @param {boolean} props.isLoading - Флаг загрузки
  * @param {boolean} props.isLastAsset - Флаг единственного актива
  * @param {boolean} props.animate - Флаг анимации появления
  */
-function AssetRow({ asset, analysis, onUpdate, onRemove, onDistributeEqually, isLoading, isLastAsset, animate }) {
+function AssetRow({ asset, analysis, onUpdate, onRemove, onDistributeEqually, onTargetEmptyChange, isLoading, isLastAsset, animate }) {
   const getAdjustmentColor = (adj) => {
     if (adj > 0.1) return 'text-green-600 bg-green-50';
     if (adj < -0.1) return 'text-red-600 bg-red-50';
@@ -370,6 +394,7 @@ function AssetRow({ asset, analysis, onUpdate, onRemove, onDistributeEqually, is
           <NumericInput
             value={asset.targetPercent}
             onChange={(val) => onUpdate({ ...asset, targetPercent: val })}
+            onEmptyChange={(isEmpty) => onTargetEmptyChange(asset.id, isEmpty)}
             className="w-20 px-2 py-1 border border-slate-300 rounded text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
             placeholder="0"
           />
@@ -498,6 +523,9 @@ export default function PortfolioRebalancer() {
   const [highlightCards, setHighlightCards] = useState(false);
   const [animationKey, setAnimationKey] = useState(0);
 
+  // Набор id активов, у которых поле "Цель" пустое (для кнопки распределения целей)
+  const [emptyTargetIds, setEmptyTargetIds] = useState(() => new Set());
+
   // ========================================================================
   // DERIVED
   // ========================================================================
@@ -574,12 +602,31 @@ export default function PortfolioRebalancer() {
   }, [assets]);
 
   /**
+   * Обработчик пустоты поля "Цель" для конкретного актива.
+   * Добавляет/удаляет id актива в наборе emptyTargetIds.
+   * @param {number} id - Идентификатор актива
+   * @param {boolean} isEmpty - true, если поле "Цель" пустое
+   */
+  const handleTargetEmptyChange = useCallback((id, isEmpty) => {
+    setEmptyTargetIds(prev => {
+      const next = new Set(prev);
+      if (isEmpty) {
+        next.add(id);
+      } else {
+        next.delete(id);
+      }
+      return next;
+    });
+  }, []);
+
+  /**
    * Распределить целевые проценты поровну между активами.
    * Использует готовую бизнес-логику из PortfolioCalculator.
+   * Учитывает активы с пустым полем "Цель" (emptyTargetIds).
    */
   const handleDistributeEqually = useCallback(() => {
-    setAssets(prevAssets => PortfolioCalculator.distributeTargets(prevAssets));
-  }, []);
+    setAssets(prevAssets => PortfolioCalculator.distributeTargets(prevAssets, emptyTargetIds));
+  }, [emptyTargetIds]);
 
   // ========================================================================
   // RENDER
@@ -622,6 +669,7 @@ export default function PortfolioRebalancer() {
                       onUpdate={handleUpdateAsset}
                       onRemove={handleRemoveAsset}
                       onDistributeEqually={handleDistributeEqually}
+                      onTargetEmptyChange={handleTargetEmptyChange}
                       isLoading={loading}
                       isLastAsset={assets.length <= 2}
                       animate={isCalculated}

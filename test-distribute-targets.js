@@ -4,11 +4,17 @@
  */
 
 // Копируем логику из PortfolioCalculator для тестирования
-function distributeTargets(assets) {
+function distributeTargets(assets, emptyTargetIds = new Set()) {
   if (assets.length === 0) return assets;
 
-  const zeroAssets = assets.filter(a => a.targetPercent === 0);
-  const nonzeroAssets = assets.filter(a => a.targetPercent > 0);
+  // Актив считается нулевым, если его цель равна 0, равна null/undefined
+  // (blur очистил поле перед нажатием кнопки) или id в наборе пустых полей
+  const isZeroAsset = (a) =>
+    a.targetPercent === 0 ||
+    a.targetPercent == null ||
+    emptyTargetIds.has(a.id);
+  const zeroAssets = assets.filter(isZeroAsset);
+  const nonzeroAssets = assets.filter(a => !isZeroAsset(a));
 
   // Случай 1: все нулевые — поделить 100% поровну
   if (zeroAssets.length === assets.length) {
@@ -42,7 +48,7 @@ function distributeTargets(assets) {
     const equalPart = remaining / zeroAssets.length;
     let zeroIndex = 0;
     return assets.map(asset => {
-      if (asset.targetPercent === 0) {
+      if (isZeroAsset(asset)) {
         if (zeroIndex === zeroAssets.length - 1) {
           const allocated = (zeroAssets.length - 1) * parseFloat(equalPart.toFixed(2));
           return { ...asset, targetPercent: parseFloat((remaining - allocated).toFixed(2)) };
@@ -59,8 +65,8 @@ function distributeTargets(assets) {
 }
 
 // Тесты
-function test(name, assets, expected) {
-  const result = distributeTargets(assets);
+function test(name, assets, expected, emptyTargetIds = new Set()) {
+  const result = distributeTargets(assets, emptyTargetIds);
   const resultPercents = result.map(a => a.targetPercent);
   const expectedPercents = expected.map(a => a.targetPercent);
 
@@ -155,6 +161,54 @@ test(
   [
     { id: 1, ticker: 'SBER', targetPercent: 70 },
     { id: 2, ticker: 'GAZP', targetPercent: 30.0 }
+  ]
+);
+
+// Тест 7: Пустое поле "Цель" (emptyTargetIds) — актив считается нулевым,
+// остаток (100 - 50) делится между пустыми активами
+test(
+  'Пустое поле "Цель" (emptyTargetIds)',
+  [
+    { id: 1, ticker: 'SBER', targetPercent: 50 },
+    { id: 2, ticker: 'GAZP', targetPercent: 50 },
+    { id: 3, ticker: 'NVTK', targetPercent: 50 }
+  ],
+  [
+    { id: 1, ticker: 'SBER', targetPercent: 50 },
+    { id: 2, ticker: 'GAZP', targetPercent: 25.0 },
+    { id: 3, ticker: 'NVTK', targetPercent: 25.0 }
+  ],
+  new Set([2, 3])
+);
+
+// Тест 8: targetPercent = null (blur очистил поле перед нажатием кнопки) —
+// актив считается нулевым, даже если его id нет в emptyTargetIds.
+// Остаток (100 - 50) делится между null-активом и нулевым активом.
+test(
+  'targetPercent = null (blur очистил поле)',
+  [
+    { id: 1, ticker: 'SBER', targetPercent: 50 },
+    { id: 2, ticker: 'GAZP', targetPercent: null },
+    { id: 3, ticker: 'NVTK', targetPercent: 0 }
+  ],
+  [
+    { id: 1, ticker: 'SBER', targetPercent: 50 },
+    { id: 2, ticker: 'GAZP', targetPercent: 25.0 },
+    { id: 3, ticker: 'NVTK', targetPercent: 25.0 }
+  ]
+);
+
+// Тест 9: targetPercent = null у одного актива и все остальные нулевые
+// (имитация: пользователь очистил одно поле, остальные уже 0)
+test(
+  'targetPercent = null среди нулевых',
+  [
+    { id: 1, ticker: 'SBER', targetPercent: 0 },
+    { id: 2, ticker: 'GAZP', targetPercent: null }
+  ],
+  [
+    { id: 1, ticker: 'SBER', targetPercent: 50.0 },
+    { id: 2, ticker: 'GAZP', targetPercent: 50.0 }
   ]
 );
 
