@@ -492,7 +492,7 @@
                   <div>{analysis.adjustment > 0 ? '+' : ''}{Math.round(analysis.adjustment)}</div>
                   <div className="text-xs mt-1">{analysis.adjustmentValue > 0 ? '+' : ''}{analysis.adjustmentValue.toFixed(2)} ₽</div>
                 </div>
-                <button onClick={() => onUpdate({ ...asset, quantity: Math.round(analysis.requiredQuantity) })}
+                <button onClick={() => { onUpdate({ ...asset, quantity: Math.round(analysis.requiredQuantity) }); if (onQuantityChanged) onQuantityChanged(asset.id); }}
                   className="p-1.5 rounded-full bg-blue-100 text-blue-700 hover:bg-blue-200 transition-colors flex-shrink-0" title="Применить требуемое количество">⬇</button>
               </div>
             ) : <div className="text-slate-400">—</div>}
