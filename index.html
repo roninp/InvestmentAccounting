@@ -587,9 +587,8 @@
       // ========================================================================
 
       const analysis = useMemo(() => {
-        if (!isCalculated) return [];
         return calculatedAnalysis ?? [];
-      }, [isCalculated, calculatedAnalysis]);
+      }, [calculatedAnalysis]);
 
       const portfolioValidation = useMemo(() => AssetValidator.validatePortfolio(assets), [assets]);
 
@@ -597,7 +596,7 @@
       // HELPERS
       // ========================================================================
 
-      const resetCalculation = useCallback(() => { setIsCalculated(false); }, []);
+      const resetCalculation = useCallback(() => { setIsCalculated(false); setCalculatedAnalysis(null); }, []);
 
       // ========================================================================
       // HANDLERS
@@ -680,6 +679,7 @@
           setIsCalculated(true);
           setIsCalculating(false);
           setAnimationKey(prev => prev + 1);
+          setTimeout(() => setIsCalculated(false), 2000);
         }, 400);
       }, [assets, cashBalance, additionalCash]);
 
