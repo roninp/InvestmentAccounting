@@ -168,8 +168,17 @@ class PortfolioCalculator {
       requiredQuantity: this.calculateRequiredQuantity(asset, asset.targetPercent, effectiveValue),
     }));
 
-    // Вычисляем adjustment и adjustmentValue
-    let budget = availableBudget != null ? availableBudget : Infinity;
+    // Выручка от продажи активов (adjustment < 0) — добавляется к бюджету
+    // докупки, чтобы деньги от продаж использовались для покупки активов,
+    // отстающих от целевой доли.
+    const salesTotal = rawAnalysis.reduce((sum, { asset, requiredQuantity }) => {
+      const adjustment = this.calculateAdjustment(asset.quantity, requiredQuantity);
+      return adjustment < 0 ? sum + Math.abs(adjustment) * asset.price : sum;
+    }, 0);
+
+    // Бюджет докупки = доступные деньги + выручка от продаж.
+    // cashSpent — нетто-эффект на остаток: покупки минус выручка от продаж.
+    let budget = availableBudget != null ? availableBudget + salesTotal : Infinity;
     let cashSpent = 0;
 
     const analysis = rawAnalysis.map(({ asset, currentPercent, requiredQuantity }) => {
@@ -207,7 +216,10 @@ class PortfolioCalculator {
       };
     });
 
-    return { analysis, cashSpent: this.floorMoney(cashSpent) };
+    // Возвращаем нетто-эффект: потраченные на покупки деньги за вычетом
+    // выручки от продаж (если продажи больше покупок — значение отрицательное,
+    // остаток на счету увеличивается).
+    return { analysis, cashSpent: this.floorMoney(cashSpent - salesTotal) };
   }
 }
 
@@ -694,7 +706,9 @@ function PortfolioSummary({ analysis, cashBalance, additionalCash, onAdditionalC
       {/* Карточка «Деньги» — остаток свободных средств и поле добавления */}
       <div className="bg-gradient-to-br from-amber-50 to-amber-100 rounded-lg p-4 border border-amber-200">
         <div className="text-sm text-amber-600 font-medium mb-1">Деньги</div>
-        <div className="text-2xl font-bold text-amber-900 mb-3">{cashBalance.toFixed(2)} ₽</div>
+        <div className="text-2xl font-bold text-amber-900 mb-3">
+          {cashBalance > 0 ? `${PortfolioCalculator.floorMoney(cashBalance).toFixed(2)} ₽` : ''}
+        </div>
         <div className="flex gap-2">
           <input
             type="text"
