@@ -746,6 +746,71 @@ function PortfolioSummary({ analysis, cashBalance, additionalCash, onAdditionalC
 }
 
 /**
+ * Страница пользовательских настроек.
+ * Настройки пока неактивные — визуальные заглушки без реализации логики.
+ */
+function SettingsPage() {
+  return (
+    <div className="max-w-7xl mx-auto px-6 py-8">
+      <div className="bg-white rounded-lg shadow-md border border-slate-200 p-6">
+        <h2 className="text-xl font-bold text-slate-800 mb-1">Настройки</h2>
+        <p className="text-slate-500 text-sm mb-6">Пользовательские настройки приложения</p>
+
+        {/* Выключатель «Использовать группы» — заглушка */}
+        <div className="flex items-center justify-between py-4 border-b border-slate-200">
+          <div>
+            <div className="font-medium text-slate-800">Использовать группы</div>
+            <div className="text-sm text-slate-500">Группировка активов по категориям</div>
+          </div>
+          <button
+            type="button"
+            disabled
+            className="relative w-12 h-6 rounded-full bg-slate-300 transition-colors cursor-not-allowed"
+            aria-label="Использовать группы (неактивно)"
+          >
+            <span className="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow" />
+          </button>
+        </div>
+
+        {/* Процент брокера за покупку активов — заглушка */}
+        <div className="flex items-center justify-between py-4 border-b border-slate-200">
+          <div>
+            <div className="font-medium text-slate-800">Процент брокера за покупку активов</div>
+            <div className="text-sm text-slate-500">Комиссия при покупке, %</div>
+          </div>
+          <input
+            type="text"
+            inputMode="decimal"
+            disabled
+            placeholder=""
+            className="w-28 px-2 py-1 border border-slate-300 rounded text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100 disabled:cursor-not-allowed"
+          />
+        </div>
+
+        {/* Процент брокера за продажу активов — заглушка */}
+        <div className="flex items-center justify-between py-4 border-b border-slate-200">
+          <div>
+            <div className="font-medium text-slate-800">Процент брокера за продажу активов</div>
+            <div className="text-sm text-slate-500">Комиссия при продаже, %</div>
+          </div>
+          <input
+            type="text"
+            inputMode="decimal"
+            disabled
+            placeholder=""
+            className="w-28 px-2 py-1 border border-slate-300 rounded text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100 disabled:cursor-not-allowed"
+          />
+        </div>
+
+        <div className="mt-4 p-4 bg-slate-100 rounded-lg text-slate-600 text-sm">
+          ⚙️ Настройки пока неактивны и будут реализованы позже.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
  * Главное приложение — Orchestrator.
  */
 export default function PortfolioRebalancer() {
@@ -828,6 +893,9 @@ export default function PortfolioRebalancer() {
 
   // Набор id активов, у которых поле "Цель" пустое (для кнопки распределения целей)
   const [emptyTargetIds, setEmptyTargetIds] = useState(() => new Set());
+
+  /** Активная страница: 'portfolio' (портфель) или 'settings' (настройки) */
+  const [activePage, setActivePage] = useState('portfolio');
 
   // ========================================================================
   // DERIVED
@@ -980,9 +1048,36 @@ export default function PortfolioRebalancer() {
             <h1 className="text-3xl font-bold">Ребалансировка портфеля</h1>
           </div>
           <p className="text-slate-400">Управление активами Мосбиржи с автоматическим расчетом ребалансировки</p>
+
+          {/* Меню навигации */}
+          <nav className="mt-4 flex gap-2">
+            <button
+              onClick={() => setActivePage('portfolio')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                activePage === 'portfolio'
+                  ? 'bg-white text-slate-900'
+                  : 'text-slate-300 hover:bg-slate-700 hover:text-white'
+              }`}
+            >
+              Портфель
+            </button>
+            <button
+              onClick={() => setActivePage('settings')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                activePage === 'settings'
+                  ? 'bg-white text-slate-900'
+                  : 'text-slate-300 hover:bg-slate-700 hover:text-white'
+              }`}
+            >
+              Настройки
+            </button>
+          </nav>
         </div>
       </div>
 
+      {activePage === 'settings' ? (
+        <SettingsPage />
+      ) : (
       <div className="max-w-7xl mx-auto px-6 py-8">
         <PortfolioSummary
           analysis={analysis}
@@ -1127,6 +1222,7 @@ export default function PortfolioRebalancer() {
           </ul>
         </div>
       </div>
+      )}
     </div>
   );
 }
