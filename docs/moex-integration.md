@@ -50,16 +50,42 @@
 
 Это особенно важно для **БПИФов** (EQMX, GOLD и аналогичных), которые числятся на рынке `shares` (акции), а не `etf`, и могут не иметь сделок в текущий момент.
 
+### Поиск по ISIN
+
+Поле «Актив» в таблице принимает **тикер** (например `SBER`) или **ISIN** (например `RU000A0JX0J2`). Это позволяет добавлять облигации и другие инструменты, у которых нет короткого тикера.
+
+Реализация:
+1. **`isIsin(value)`** — определяет, является ли строка ISIN (12 символов: 2 буквы страны + 9 букв/цифр + 1 контрольная цифра).
+2. **`resolveIsin(isin)`** — запрашивает поисковый эндпоинт `https://iss.moex.com/iss/securities.json?q={ISIN}` и извлекает `secid` (тикер) первой найденной строки.
+3. **`fetchPrice(value)`** — если входная строка похожа на ISIN, сначала резолвит её в тикер через `resolveIsin`, затем получает цену по тикеру как обычно.
+
+```javascript
+/**
+ * Определить, является ли строка ISIN
+ * @param {string} value - Входная строка
+ * @returns {boolean} true, если строка похожа на ISIN
+ */
+MoexPriceService.isIsin(value)
+
+/**
+ * Резолвить ISIN в тикер (secid) через поисковый эндпоинт ISS API
+ * @param {string} isin - ISIN инструмента (например 'RU000A0JX0J2')
+ * @returns {Promise<string>} Тикер (secid) инструмента
+ * @throws {Error} Если ISIN не найден на Мосбирже
+ */
+MoexPriceService.resolveIsin(isin)
+```
+
 ### API
 
 ```javascript
 /**
- * Получить цену одного актива
- * @param {string} ticker - Тикер (например 'SBER')
+ * Получить цену одного актива (по тикеру или ISIN)
+ * @param {string} value - Тикер (например 'SBER') или ISIN (например 'RU000A0JX0J2')
  * @returns {Promise<number>} Цена актива
  * @throws {Error} Если актив не найден или нет данных
  */
-MoexPriceService.fetchPrice(ticker)
+MoexPriceService.fetchPrice(value)
 
 /**
  * Получить цены нескольких активов

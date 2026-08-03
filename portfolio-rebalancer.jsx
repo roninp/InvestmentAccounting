@@ -581,9 +581,9 @@ function AssetRow({ asset, analysis, onUpdate, onRemove, onDistributeEqually, on
           type="text"
           value={asset.ticker}
           onChange={(e) => onUpdate({ ...asset, ticker: e.target.value.toUpperCase() })}
-          className="w-24 px-2 py-1 border border-slate-300 rounded font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-          maxLength="6"
-          placeholder="ТИКЕР"
+          className="w-32 px-2 py-1 border border-slate-300 rounded font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+          maxLength="12"
+          placeholder="ТИКЕР/ISIN"
         />
       </td>
       {/* Количество — всегда видно */}

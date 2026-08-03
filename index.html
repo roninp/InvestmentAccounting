@@ -242,7 +242,40 @@
       ];
       static BOARD_PRIORITY = ['TQBR', 'TQTF', 'TQOB', 'TQTD', 'TQPI', 'SMAL', 'CETS'];
 
-      static async fetchPrice(ticker) {
+      /**
+       * Определить, является ли строка ISIN (12 символов: буквы A–Z и цифры).
+       * @param {string} value - Входная строка
+       * @returns {boolean} true, если строка похожа на ISIN
+       */
+      static isIsin(value) {
+        return /^[A-Z]{2}[A-Z0-9]{9}[0-9]$/.test(value.toUpperCase());
+      }
+
+      /**
+       * Резолвить ISIN в тикер (secid) через поисковый эндпоинт ISS API.
+       * @param {string} isin - ISIN инструмента (например 'RU000A0JX0J2')
+       * @returns {Promise<string>} Тикер (secid) инструмента
+       * @throws {Error} Если ISIN не найден на Мосбирже
+       */
+      static async resolveIsin(isin) {
+        const isinUpper = isin.toUpperCase();
+        const url = `${this.ISS_URL}/securities.json?q=${encodeURIComponent(isinUpper)}&iss.meta=off`;
+        const response = await fetch(url, { signal: AbortSignal.timeout(5000) });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const data = await response.json();
+        const securities = data.securities;
+        if (!securities?.data?.length) {
+          throw new Error(`ISIN "${isinUpper}" не найден на Мосбирже`);
+        }
+        const cols = securities.columns;
+        const si = cols.indexOf('secid');
+        if (si === -1) throw new Error(`ISIN "${isinUpper}" не найден на Мосбирже`);
+        return securities.data[0][si];
+      }
+
+      static async fetchPrice(value) {
+        // Если введён ISIN — сначала резолвим его в тикер
+        const ticker = this.isIsin(value) ? await this.resolveIsin(value) : value;
         const tickerUpper = ticker.toUpperCase();
         let lastError = null;
         for (const { engine, market } of this.MARKETS) {
@@ -466,8 +499,8 @@
         <tr className={`border-b border-slate-200 hover:bg-slate-50 transition-colors ${animate ? `animate-fade-in ${delayClass}` : ''}`}>
           <td className="px-2 sm:px-4 py-3 font-medium text-slate-900">
             <input type="text" value={asset.ticker} onChange={(e) => onUpdate({ ...asset, ticker: e.target.value.toUpperCase() })}
-              className="w-24 px-2 py-1 border border-slate-300 rounded font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              maxLength="6" placeholder="ТИКЕР" />
+              className="w-32 px-2 py-1 border border-slate-300 rounded font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              maxLength="12" placeholder="ТИКЕР/ISIN" />
           </td>
           <td className="px-2 sm:px-4 py-3">
             <NumericInput value={asset.quantity} onChange={(val) => { onUpdate({ ...asset, quantity: val }); if (onQuantityChanged) onQuantityChanged(asset.id); }} isInteger
