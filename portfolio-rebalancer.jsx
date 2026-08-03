@@ -746,15 +746,61 @@ function PortfolioSummary({ analysis, cashBalance, additionalCash, onAdditionalC
 }
 
 /**
- * Страница пользовательских настроек.
- * Настройки пока неактивные — визуальные заглушки без реализации логики.
+ * Страница тарифов — временная заглушка.
+ * Содержимое будет добавлено позже.
  */
-function SettingsPage() {
+function TariffsPage() {
+  return (
+    <div className="max-w-7xl mx-auto px-6 py-8">
+      <div className="bg-white rounded-lg shadow-md border border-slate-200 p-6">
+        <h2 className="text-xl font-bold text-slate-800 mb-1">Тарифы</h2>
+        <p className="text-slate-500 text-sm">Страница тарифов будет добавлена позже.</p>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Страница пользовательских настроек.
+ * Выбор тарифа активен; остальные настройки — визуальные заглушки без реализации логики.
+ * @param {Object} props
+ * @param {string} props.tier - Текущий тариф ('free' | 'basic' | 'pro')
+ * @param {Function} props.onTierChange - Колбэк смены тарифа
+ */
+function SettingsPage({ tier, onTierChange }) {
+  const TIERS = [
+    { id: 'free', label: 'Бесплатный' },
+    { id: 'basic', label: 'Базовый' },
+    { id: 'pro', label: 'Про' },
+  ];
+
   return (
     <div className="max-w-7xl mx-auto px-6 py-8">
       <div className="bg-white rounded-lg shadow-md border border-slate-200 p-6">
         <h2 className="text-xl font-bold text-slate-800 mb-1">Настройки</h2>
         <p className="text-slate-500 text-sm mb-6">Пользовательские настройки приложения</p>
+
+        {/* Выбор тарифа */}
+        <div className="py-4 border-b border-slate-200">
+          <div className="font-medium text-slate-800">Тариф</div>
+          <div className="text-sm text-slate-500 mb-3">Выберите тарифный план. Пока выбирается вручную, в дальнейшем будет браться из БД.</div>
+          <div className="flex flex-wrap gap-2">
+            {TIERS.map(t => (
+              <button
+                key={t.id}
+                type="button"
+                onClick={() => onTierChange(t.id)}
+                className={`px-4 py-2 rounded-lg text-sm font-medium border transition-colors ${
+                  tier === t.id
+                    ? 'bg-blue-600 text-white border-blue-600'
+                    : 'bg-white text-slate-700 border-slate-300 hover:border-blue-400 hover:text-blue-600'
+                }`}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+        </div>
 
         {/* Выключатель «Использовать группы» — заглушка */}
         <div className="flex items-center justify-between py-4 border-b border-slate-200">
@@ -894,8 +940,16 @@ export default function PortfolioRebalancer() {
   // Набор id активов, у которых поле "Цель" пустое (для кнопки распределения целей)
   const [emptyTargetIds, setEmptyTargetIds] = useState(() => new Set());
 
-  /** Активная страница: 'portfolio' (портфель) или 'settings' (настройки) */
+  /** Активная страница: 'portfolio' (портфель), 'settings' (настройки) или 'tariffs' (тарифы) */
   const [activePage, setActivePage] = useState('portfolio');
+
+  /** Текущий тариф: 'free' (Бесплатный), 'basic' (Базовый), 'pro' (Про). По умолчанию — Базовый */
+  const [tier, setTier] = useState('basic');
+
+  /** Максимальное количество активов в портфеле в зависимости от тарифа */
+  const maxAssets = useMemo(() => {
+    return tier === 'free' ? 2 : 100;
+  }, [tier]);
 
   // ========================================================================
   // DERIVED
@@ -1071,12 +1125,24 @@ export default function PortfolioRebalancer() {
             >
               Настройки
             </button>
+            <button
+              onClick={() => setActivePage('tariffs')}
+              className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+                activePage === 'tariffs'
+                  ? 'bg-white text-slate-900'
+                  : 'text-slate-300 hover:bg-slate-700 hover:text-white'
+              }`}
+            >
+              Тарифы
+            </button>
           </nav>
         </div>
       </div>
 
       {activePage === 'settings' ? (
-        <SettingsPage />
+        <SettingsPage tier={tier} onTierChange={setTier} />
+      ) : activePage === 'tariffs' ? (
+        <TariffsPage />
       ) : (
       <div className="max-w-7xl mx-auto px-6 py-8">
         <PortfolioSummary
@@ -1175,11 +1241,11 @@ export default function PortfolioRebalancer() {
 
           <button
             onClick={handleAddAsset}
-            disabled={assets.length >= 100}
+            disabled={assets.length >= maxAssets}
             className="flex items-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:bg-slate-400 disabled:cursor-not-allowed transition-colors font-medium"
           >
             <Plus size={18} />
-            Добавить актив ({assets.length}/100)
+            Добавить актив ({assets.length}/{maxAssets})
           </button>
         </div>
 
