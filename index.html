@@ -41,6 +41,10 @@
     .animate-delay-8  { animation-delay: 0.28s; }
     .animate-delay-9  { animation-delay: 0.32s; }
     .animate-delay-10 { animation-delay: 0.36s; }
+
+    /* Неактивная настройка — приглушённый вид */
+    .setting-disabled { opacity: 0.55; }
+    .setting-disabled .setting-title { color: #94a3b8; } /* slate-400 */
   </style>
 </head>
 <body>
@@ -619,6 +623,33 @@
     }
 
     /**
+     * Палитра цветов для визуального выделения групп активов.
+     * Каждая группа получает свой цвет по индексу в массиве groups.
+     * @type {Array<{row: string, badge: string, dot: string}>}
+     */
+    const GROUP_COLORS = [
+      { row: 'bg-blue-50/60', badge: 'bg-blue-100 text-blue-800', dot: 'bg-blue-500' },
+      { row: 'bg-emerald-50/60', badge: 'bg-emerald-100 text-emerald-800', dot: 'bg-emerald-500' },
+      { row: 'bg-purple-50/60', badge: 'bg-purple-100 text-purple-800', dot: 'bg-purple-500' },
+      { row: 'bg-amber-50/60', badge: 'bg-amber-100 text-amber-800', dot: 'bg-amber-500' },
+      { row: 'bg-rose-50/60', badge: 'bg-rose-100 text-rose-800', dot: 'bg-rose-500' },
+      { row: 'bg-cyan-50/60', badge: 'bg-cyan-100 text-cyan-800', dot: 'bg-cyan-500' },
+    ];
+
+    /**
+     * Получить цвет группы по её id.
+     * @param {number|null} groupId - ID группы
+     * @param {Array} groups - Массив групп
+     * @returns {{row: string, badge: string, dot: string}} Цветовые классы
+     */
+    function getGroupColor(groupId, groups) {
+      if (groupId == null) return { row: '', badge: 'bg-slate-100 text-slate-600', dot: 'bg-slate-400' };
+      const index = groups.findIndex(g => g.id === groupId);
+      if (index === -1) return { row: '', badge: 'bg-slate-100 text-slate-600', dot: 'bg-slate-400' };
+      return GROUP_COLORS[index % GROUP_COLORS.length];
+    }
+
+    /**
      * Строка таблицы актива.
      * @param {Object} props
      * @param {Object} props.asset - Данные актива
@@ -648,9 +679,11 @@
         return 'bg-blue-100 text-blue-900';
       };
       const delayClass = animate ? `animate-delay-${Math.min(animateDelay + 1, 10)}` : '';
+      // Цвет группы для визуального выделения строки
+      const groupColor = useGroups ? getGroupColor(asset.groupId, groups) : { row: '', badge: '', dot: '' };
 
       return (
-        <tr className={`border-b border-slate-200 hover:bg-slate-50 transition-colors ${animate ? `animate-fade-in ${delayClass}` : ''}`}>
+        <tr className={`border-b border-slate-200 hover:bg-slate-50 transition-colors ${groupColor.row} ${animate ? `animate-fade-in ${delayClass}` : ''}`}>
           <td className="px-2 sm:px-4 py-3 font-medium text-slate-900">
             <input type="text" value={asset.ticker} onChange={(e) => onUpdate({ ...asset, ticker: e.target.value.toUpperCase() })}
               className="w-32 px-2 py-1 border border-slate-300 rounded font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -658,16 +691,19 @@
           </td>
           {useGroups && (
             <td className="px-2 sm:px-4 py-3">
-              <select
-                value={asset.groupId ?? ''}
-                onChange={(e) => onUpdate({ ...asset, groupId: e.target.value === '' ? null : Number(e.target.value) })}
-                className="w-36 px-2 py-1 border border-slate-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="">— Группа —</option>
-                {groups.map(g => (
-                  <option key={g.id} value={g.id}>{g.name}</option>
-                ))}
-              </select>
+              <div className="flex items-center gap-2">
+                <span className={`inline-block w-2.5 h-2.5 rounded-full ${groupColor.dot} flex-shrink-0`} />
+                <select
+                  value={asset.groupId ?? ''}
+                  onChange={(e) => onUpdate({ ...asset, groupId: e.target.value === '' ? null : Number(e.target.value) })}
+                  className="w-32 px-2 py-1 border border-slate-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                >
+                  <option value="">— Группа —</option>
+                  {groups.map(g => (
+                    <option key={g.id} value={g.id}>{g.name}</option>
+                  ))}
+                </select>
+              </div>
             </td>
           )}
           <td className="px-2 sm:px-4 py-3">
@@ -771,6 +807,68 @@
     }
 
     /**
+     * Компонент отображения целевых и текущих долей групп в портфеле.
+     * Показывается в режиме групп (useGroups && groups.length > 0).
+     * @param {Object} props
+     * @param {Array} props.groups - Массив групп [{ id, name, percent }]
+     * @param {Array} props.assets - Массив активов
+     */
+    function GroupAllocations({ groups, assets }) {
+      // Общая стоимость портфеля
+      const totalValue = PortfolioCalculator.calculateTotalValue(assets);
+
+      // Для каждой группы считаем текущую стоимость и долю
+      const data = groups.map((g, index) => {
+        const groupAssets = assets.filter(a => a.groupId === g.id);
+        const groupValue = PortfolioCalculator.calculateTotalValue(groupAssets);
+        const currentPercent = totalValue > 0 ? groupValue / totalValue * 100 : 0;
+        const targetPercent = g.percent;
+        const diff = currentPercent - targetPercent;
+        const color = getGroupColor(g.id, groups);
+        return { ...g, groupValue, currentPercent, targetPercent, diff, color, index };
+      });
+
+      return (
+        <div className="bg-white rounded-lg shadow-md border border-slate-200 p-4 mb-6">
+          <div className="text-sm font-semibold text-slate-700 mb-3">Доли групп в портфеле</div>
+          <div className="space-y-3">
+            {data.map(item => {
+              // Цвет отклонения: зелёный — в пределах 1%, жёлтый — до 5%, красный — больше
+              const diffColor = Math.abs(item.diff) < 1
+                ? 'text-emerald-600'
+                : Math.abs(item.diff) < 5
+                  ? 'text-amber-600'
+                  : 'text-red-600';
+              const barColor = item.color.dot;
+              return (
+                <div key={item.id} className="flex items-center gap-3">
+                  <span className={`inline-block w-2.5 h-2.5 rounded-full ${item.color.dot} flex-shrink-0`} />
+                  <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${item.color.badge}`}>{item.name}</span>
+                  <div className="flex-1">
+                    <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                      <div
+                        className={`h-full rounded-full transition-all ${barColor}`}
+                        style={{ width: `${Math.min(Math.max(item.currentPercent, 0), 100)}%` }}
+                      />
+                    </div>
+                  </div>
+                  <div className="text-right flex-shrink-0">
+                    <div className="text-sm font-medium text-slate-700">
+                      {item.currentPercent.toFixed(2)}% <span className="text-slate-400 text-xs">/ {item.targetPercent.toFixed(2)}%</span>
+                    </div>
+                    <div className={`text-xs font-medium ${diffColor}`}>
+                      {item.diff > 0 ? '+' : ''}{item.diff.toFixed(2)}%
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    /**
      * Страница тарифов — временная заглушка.
      * Содержимое будет добавлено позже.
      */
@@ -854,9 +952,9 @@
             </div>
 
             {/* Выключатель «Использовать группы (Про)» */}
-            <div className="flex items-center justify-between py-4 border-b border-slate-200">
+            <div className={`flex items-center justify-between py-4 border-b border-slate-200 ${tier !== 'pro' ? 'setting-disabled' : ''}`}>
               <div>
-                <div className="font-medium text-slate-800">
+                <div className="font-medium text-slate-800 setting-title">
                   Использовать группы <span className="text-xs font-semibold text-purple-600 bg-purple-50 px-1.5 py-0.5 rounded">Про</span>
                 </div>
                 <div className="text-sm text-slate-500">Группировка активов по категориям</div>
@@ -867,7 +965,7 @@
                 onClick={() => onUseGroupsChange(!useGroups)}
                 className={`relative w-12 h-6 rounded-full transition-colors ${
                   useGroups ? 'bg-blue-600' : 'bg-slate-300'
-                } ${tier !== 'pro' ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+                } ${tier !== 'pro' ? 'cursor-not-allowed' : 'cursor-pointer'}`}
                 aria-label="Использовать группы"
               >
                 <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${useGroups ? 'left-[26px]' : 'left-0.5'}`} />
@@ -941,9 +1039,9 @@
             )}
 
             {/* Процент брокера за покупку активов — заглушка */}
-            <div className="flex items-center justify-between py-4 border-b border-slate-200">
+            <div className="flex items-center justify-between py-4 border-b border-slate-200 setting-disabled">
               <div>
-                <div className="font-medium text-slate-800">Процент брокера за покупку активов</div>
+                <div className="font-medium text-slate-800 setting-title">Процент брокера за покупку активов</div>
                 <div className="text-sm text-slate-500">Комиссия при покупке, %</div>
               </div>
               <input
@@ -956,9 +1054,9 @@
             </div>
 
             {/* Процент брокера за продажу активов — заглушка */}
-            <div className="flex items-center justify-between py-4 border-b border-slate-200">
+            <div className="flex items-center justify-between py-4 border-b border-slate-200 setting-disabled">
               <div>
-                <div className="font-medium text-slate-800">Процент брокера за продажу активов</div>
+                <div className="font-medium text-slate-800 setting-title">Процент брокера за продажу активов</div>
                 <div className="text-sm text-slate-500">Комиссия при продаже, %</div>
               </div>
               <input
@@ -1333,6 +1431,10 @@
 
             {error && (
               <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-800 text-sm">⚠️ {error}</div>
+            )}
+
+            {useGroups && groups.length > 0 && (
+              <GroupAllocations groups={groups} assets={assets} />
             )}
 
             {assets.length > 0 ? (
