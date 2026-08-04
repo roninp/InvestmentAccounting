@@ -84,9 +84,33 @@
         return assets.reduce((sum, asset) => sum + (asset.quantity * asset.price), 0);
       }
 
-      static calculatePercentages(assets) {
+      /**
+       * Расчет процента каждого актива.
+       * В режиме групп (groups передан и не пуст) процент считается
+       * внутри группы: стоимость актива / стоимость группы * 100.
+       * Актив без группы (groupId == null) считается от всего портфеля (fallback).
+       * @param {Array} assets - Массив активов
+       * @param {Array|null} [groups] - Массив групп [{ id, name, percent }]
+       * @returns {number[]} Процент каждого актива
+       */
+      static calculatePercentages(assets, groups = null) {
         const total = this.calculateTotalValue(assets);
         if (total === 0) return assets.map(() => 0);
+
+        // Режим групп: процент считается внутри группы
+        if (groups && groups.length > 0) {
+          return assets.map(asset => {
+            if (asset.groupId == null) {
+              // Актив без группы — процент от всего портфеля (fallback)
+              return (asset.quantity * asset.price) / total * 100;
+            }
+            const groupAssets = assets.filter(a => a.groupId === asset.groupId);
+            const groupTotal = this.calculateTotalValue(groupAssets);
+            if (groupTotal === 0) return 0;
+            return (asset.quantity * asset.price) / groupTotal * 100;
+          });
+        }
+
         return assets.map(asset => (asset.quantity * asset.price) / total * 100);
       }
 
@@ -101,25 +125,28 @@
       }
 
       /**
-       * Распределение целевых процентов между активами.
+       * Распределение целевых процентов внутри одной группы активов.
        * Актив считается нулевым, если его targetPercent === 0 ИЛИ его id находится
        * в наборе emptyTargetIds (поле "Цель" пустое, фокус ещё не потерян).
+       * @param {Array} groupAssets - Активы одной группы
+       * @param {Set<number>} emptyTargetIds - Набор id активов с пустым полем "Цель"
+       * @returns {Array} Новый массив с заполненными targetPercent
        */
-      static distributeTargets(assets, emptyTargetIds = new Set()) {
-        if (assets.length === 0) return assets;
+      static distributeGroupTargets(groupAssets, emptyTargetIds) {
+        if (groupAssets.length === 0) return groupAssets;
 
         const isZeroAsset = (a) =>
           a.targetPercent === 0 ||
           a.targetPercent == null ||
           emptyTargetIds.has(a.id);
-        const zeroAssets = assets.filter(isZeroAsset);
-        const nonzeroAssets = assets.filter(a => !isZeroAsset(a));
+        const zeroAssets = groupAssets.filter(isZeroAsset);
+        const nonzeroAssets = groupAssets.filter(a => !isZeroAsset(a));
 
-        if (zeroAssets.length === assets.length) {
-          const equalPercent = 100 / assets.length;
-          return assets.map((asset, index) => {
-            if (index === assets.length - 1) {
-              const allocated = (assets.length - 1) * parseFloat(equalPercent.toFixed(2));
+        if (zeroAssets.length === groupAssets.length) {
+          const equalPercent = 100 / groupAssets.length;
+          return groupAssets.map((asset, index) => {
+            if (index === groupAssets.length - 1) {
+              const allocated = (groupAssets.length - 1) * parseFloat(equalPercent.toFixed(2));
               return { ...asset, targetPercent: parseFloat((100 - allocated).toFixed(2)) };
             }
             return { ...asset, targetPercent: parseFloat(equalPercent.toFixed(2)) };
@@ -130,10 +157,10 @@
           const sumNonZero = nonzeroAssets.reduce((sum, a) => sum + a.targetPercent, 0);
           const remaining = 100 - sumNonZero;
           if (remaining <= 0) {
-            const eq = 100 / assets.length;
-            return assets.map((a, i) => {
-              if (i === assets.length - 1) {
-                const al = (assets.length - 1) * parseFloat(eq.toFixed(2));
+            const eq = 100 / groupAssets.length;
+            return groupAssets.map((a, i) => {
+              if (i === groupAssets.length - 1) {
+                const al = (groupAssets.length - 1) * parseFloat(eq.toFixed(2));
                 return { ...a, targetPercent: parseFloat((100 - al).toFixed(2)) };
               }
               return { ...a, targetPercent: parseFloat(eq.toFixed(2)) };
@@ -141,7 +168,7 @@
           }
           const eqPart = remaining / zeroAssets.length;
           let zi = 0;
-          return assets.map(a => {
+          return groupAssets.map(a => {
             if (isZeroAsset(a)) {
               if (zi === zeroAssets.length - 1) {
                 const al = (zeroAssets.length - 1) * parseFloat(eqPart.toFixed(2));
@@ -154,26 +181,77 @@
           });
         }
 
-        return assets;
+        return groupAssets;
+      }
+
+      /**
+       * Распределение целевых процентов между активами.
+       * В режиме групп (groups передан и не пуст) распределение выполняется
+       * независимо в рамках каждой группы: сумма целей активов группы = 100%.
+       * Активы без группы (groupId == null) распределяются как отдельная группа.
+       * @param {Array} assets - Массив активов
+       * @param {Set<number>} [emptyTargetIds] - Набор id активов с пустым полем "Цель"
+       * @param {Array|null} [groups] - Массив групп [{ id, name, percent }]
+       * @returns {Array} Новый массив с заполненными targetPercent
+       */
+      static distributeTargets(assets, emptyTargetIds = new Set(), groups = null) {
+        if (assets.length === 0) return assets;
+
+        // Режим групп: распределяем независимо в рамках каждой группы
+        if (groups && groups.length > 0) {
+          const groupIds = [...new Set(assets.map(a => a.groupId).filter(id => id != null))];
+          // Активы без группы — отдельная "группа" (groupId = null)
+          const ungrouped = assets.filter(a => a.groupId == null);
+          let result = [];
+          for (const gid of groupIds) {
+            const groupAssets = assets.filter(a => a.groupId === gid);
+            result = result.concat(this.distributeGroupTargets(groupAssets, emptyTargetIds));
+          }
+          if (ungrouped.length > 0) {
+            result = result.concat(this.distributeGroupTargets(ungrouped, emptyTargetIds));
+          }
+          return result;
+        }
+
+        return this.distributeGroupTargets(assets, emptyTargetIds);
       }
 
       /**
        * Полный анализ портфеля с учётом эффективной стоимости и лимита бюджета.
+       * В режиме групп (groups передан и не пуст) эффективная стоимость
+       * распределяется по группам пропорционально их долям, и targetPercent
+       * актива применяется как процент от стоимости его группы.
        * @param {Array} assets - Массив активов
        * @param {number} effectiveTotalValue - Эффективная стоимость портфеля
        * @param {number} [availableBudget] - Доступный бюджет на докупку
+       * @param {Array|null} [groups] - Массив групп [{ id, name, percent }]
        * @returns {{ analysis: Array, cashSpent: number }}
        */
-      static analyzePortfolio(assets, effectiveTotalValue = 0, availableBudget) {
-        const currentPercentages = this.calculatePercentages(assets);
+      static analyzePortfolio(assets, effectiveTotalValue = 0, availableBudget, groups = null) {
+        const currentPercentages = this.calculatePercentages(assets, groups);
         const totalPortfolioValue = this.calculateTotalValue(assets);
         const effectiveValue = effectiveTotalValue > 0 ? effectiveTotalValue : totalPortfolioValue;
 
-        const rawAnalysis = assets.map((asset, index) => ({
-          asset,
-          currentPercent: currentPercentages[index],
-          requiredQuantity: this.calculateRequiredQuantity(asset, asset.targetPercent, effectiveValue),
-        }));
+        // В режиме групп: для каждого актива определяем эффективную стоимость его группы
+        const groupEffectiveValues = {};
+        if (groups && groups.length > 0) {
+          for (const g of groups) {
+            groupEffectiveValues[g.id] = effectiveValue * g.percent / 100;
+          }
+        }
+
+        const rawAnalysis = assets.map((asset, index) => {
+          let targetValue = effectiveValue;
+          if (groups && groups.length > 0 && asset.groupId != null) {
+            // Эффективная стоимость группы актива
+            targetValue = groupEffectiveValues[asset.groupId] ?? effectiveValue;
+          }
+          return {
+            asset,
+            currentPercent: currentPercentages[index],
+            requiredQuantity: this.calculateRequiredQuantity(asset, asset.targetPercent, targetValue),
+          };
+        });
 
         // Выручка от продажи активов (adjustment < 0) — добавляется к бюджету
         // докупки, чтобы деньги от продаж использовались для покупки активов,
@@ -327,16 +405,61 @@
     }
 
     class AssetValidator {
-      static validate(asset) {
+      /**
+       * Валидация одного актива.
+       * @param {Object} asset - Данные актива
+       * @param {boolean} [requireGroup] - true — актив обязан иметь groupId
+       * @returns {{ isValid: boolean, errors: string[] }}
+       */
+      static validate(asset, requireGroup = false) {
         const errors = [];
         if (asset.quantity < 0) errors.push('Количество не может быть отрицательным');
         if (asset.price < 0) errors.push('Цена не может быть отрицательной');
         if (asset.targetPercent < 0 || asset.targetPercent > 100) errors.push('Целевой процент должен быть от 0 до 100');
+        if (requireGroup && asset.groupId == null) errors.push('Выберите группу для актива');
         return { isValid: errors.length === 0, errors };
       }
-      static validatePortfolio(assets) {
+
+      /**
+       * Валидация портфеля в целом.
+       * Без групп: сумма targetPercent всех активов = 100%.
+       * С группами: сумма процентов групп = 100%, каждый актив имеет группу,
+       * и сумма targetPercent активов в каждой группе = 100%.
+       * @param {Array} assets - Массив активов
+       * @param {Array|null} [groups] - Массив групп [{ id, name, percent }]
+       * @returns {{ isValid: boolean, error?: string, shouldShow?: boolean }}
+       */
+      static validatePortfolio(assets, groups = null) {
         const hasAny = assets.some(a => a.targetPercent > 0);
         if (!hasAny) return { isValid: true, shouldShow: false };
+
+        // Режим групп
+        if (groups && groups.length > 0) {
+          // 1. Каждый актив обязан иметь группу
+          const ungrouped = assets.filter(a => a.groupId == null);
+          if (ungrouped.length > 0) {
+            return { isValid: false, shouldShow: true, error: 'Все активы должны быть привязаны к группе' };
+          }
+
+          // 2. Сумма процентов групп = 100%
+          const sumGroupPercents = groups.reduce((s, g) => s + g.percent, 0);
+          if (Math.abs(sumGroupPercents - 100) > 0.01) {
+            return { isValid: false, shouldShow: true, error: `Сумма долей групп должна быть 100%, сейчас ${sumGroupPercents.toFixed(2)}%` };
+          }
+
+          // 3. Для каждой группы сумма targetPercent активов = 100%
+          for (const g of groups) {
+            const groupAssets = assets.filter(a => a.groupId === g.id);
+            if (groupAssets.length === 0) continue;
+            const sum = groupAssets.reduce((s, a) => s + a.targetPercent, 0);
+            if (Math.abs(sum - 100) > 0.01) {
+              return { isValid: false, shouldShow: true, error: `Сумма целей активов группы «${g.name}» должна быть 100%, сейчас ${sum.toFixed(2)}%` };
+            }
+          }
+          return { isValid: true, shouldShow: true };
+        }
+
+        // Без групп — как раньше
         const sum = assets.reduce((s, a) => s + a.targetPercent, 0);
         if (Math.abs(sum - 100) > 0.01) return { isValid: false, shouldShow: true, error: `Сумма целевых процентов должна быть 100%, сейчас ${sum.toFixed(2)}%` };
         return { isValid: true, shouldShow: true };
@@ -349,7 +472,7 @@
 
     class PortfolioStorage {
       static STORAGE_KEY = 'portfolioRebalancerData';
-      static DATA_VERSION = 2;
+      static DATA_VERSION = 3;
 
       static save(data) {
         try {
@@ -359,6 +482,9 @@
             assets: data.assets,
             nextId: data.nextId,
             cashBalance: data.cashBalance ?? 0,
+            useGroups: data.useGroups ?? false,
+            groups: data.groups ?? [],
+            nextGroupId: data.nextGroupId ?? 1,
           };
           localStorage.setItem(this.STORAGE_KEY, JSON.stringify(payload));
         } catch (err) {
@@ -376,6 +502,9 @@
             assets: data.assets,
             nextId: data.nextId,
             cashBalance: data.cashBalance ?? 0,
+            useGroups: data.useGroups ?? false,
+            groups: data.groups ?? [],
+            nextGroupId: data.nextGroupId ?? 1,
           };
         } catch { return null; }
       }
@@ -392,6 +521,9 @@
             assets: data.assets,
             nextId: data.nextId,
             cashBalance: data.cashBalance ?? 0,
+            useGroups: data.useGroups ?? false,
+            groups: data.groups ?? [],
+            nextGroupId: data.nextGroupId ?? 1,
           };
           const json = JSON.stringify(payload, null, 2);
           const blob = new Blob([json], { type: 'application/json' });
@@ -422,19 +554,26 @@
           assets: data.assets,
           nextId: data.nextId,
           cashBalance: data.cashBalance ?? 0,
+          useGroups: data.useGroups ?? false,
+          groups: data.groups ?? [],
+          nextGroupId: data.nextGroupId ?? 1,
         };
       }
 
       static validate(data) {
         if (!data || typeof data !== 'object') return false;
         if (!Array.isArray(data.assets)) return false;
-        return data.assets.every(a =>
+        const assetsValid = data.assets.every(a =>
           typeof a.id === 'number' &&
           typeof a.ticker === 'string' &&
           typeof a.quantity === 'number' &&
           typeof a.price === 'number' &&
           typeof a.targetPercent === 'number'
         );
+        if (!assetsValid) return false;
+        // Группы опциональны (для обратной совместимости со старыми файлами)
+        if (data.groups != null && !Array.isArray(data.groups)) return false;
+        return true;
       }
     }
 
@@ -481,8 +620,23 @@
 
     /**
      * Строка таблицы актива.
+     * @param {Object} props
+     * @param {Object} props.asset - Данные актива
+     * @param {Object|null} props.analysis - Результат анализа
+     * @param {Function} props.onUpdate - Колбэк обновления
+     * @param {Function} props.onRemove - Колбэк удаления
+     * @param {Function} props.onDistributeEvenly - Колбэк распределения целей поровну
+     * @param {Function} props.onTargetEmptyChange - Колбэк пустоты поля «Цель»
+     * @param {Function} props.onQuantityChanged - Колбэк изменения количества
+     * @param {boolean} props.isLoading - Флаг загрузки
+     * @param {boolean} props.isLastAsset - Флаг единственного актива
+     * @param {boolean} props.animate - Флаг анимации
+     * @param {number} props.animateDelay - Задержка анимации
+     * @param {boolean} props.isAdjustmentActive - Активна ли колонка «Купить/Продать»
+     * @param {boolean} props.useGroups - Включены ли группы
+     * @param {Array} props.groups - Массив групп [{ id, name, percent }]
      */
-    function AssetRow({ asset, analysis, onUpdate, onRemove, onDistributeEvenly, onTargetEmptyChange, onQuantityChanged, isLoading, isLastAsset, animate, animateDelay, isAdjustmentActive }) {
+    function AssetRow({ asset, analysis, onUpdate, onRemove, onDistributeEvenly, onTargetEmptyChange, onQuantityChanged, isLoading, isLastAsset, animate, animateDelay, isAdjustmentActive, useGroups, groups }) {
       const getAdjustmentColor = (adj) => {
         if (adj > 0.1) return 'text-green-600 bg-green-50';
         if (adj < -0.1) return 'text-red-600 bg-red-50';
@@ -502,6 +656,20 @@
               className="w-32 px-2 py-1 border border-slate-300 rounded font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
               maxLength="12" placeholder="ТИКЕР/ISIN" />
           </td>
+          {useGroups && (
+            <td className="px-2 sm:px-4 py-3">
+              <select
+                value={asset.groupId ?? ''}
+                onChange={(e) => onUpdate({ ...asset, groupId: e.target.value === '' ? null : Number(e.target.value) })}
+                className="w-36 px-2 py-1 border border-slate-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              >
+                <option value="">— Группа —</option>
+                {groups.map(g => (
+                  <option key={g.id} value={g.id}>{g.name}</option>
+                ))}
+              </select>
+            </td>
+          )}
           <td className="px-2 sm:px-4 py-3">
             <NumericInput value={asset.quantity} onChange={(val) => { onUpdate({ ...asset, quantity: val }); if (onQuantityChanged) onQuantityChanged(asset.id); }} isInteger
               className="w-20 px-2 py-1 border border-slate-300 rounded text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="0" />
@@ -551,11 +719,17 @@
       );
     }
 
-    function PortfolioHeader() {
+    /**
+     * Заголовок таблицы портфеля.
+     * @param {Object} props
+     * @param {boolean} props.useGroups - Включены ли группы (показывает колонку «Группа»)
+     */
+    function PortfolioHeader({ useGroups }) {
       return (
         <thead className="bg-gradient-to-r from-slate-900 to-slate-800 text-white">
           <tr>
             <th className="px-2 sm:px-4 py-3 text-left text-sm font-semibold">Актив</th>
+            {useGroups && <th className="px-2 sm:px-4 py-3 text-left text-sm font-semibold">Группа</th>}
             <th className="px-2 sm:px-4 py-3 text-left text-sm font-semibold">Кол-во</th>
             <th className="px-2 sm:px-4 py-3 text-right text-sm font-semibold">Цена</th>
             <th className="px-2 sm:px-4 py-3 text-right text-sm font-semibold">Сумма</th>
@@ -613,17 +787,43 @@
 
     /**
      * Страница пользовательских настроек.
-     * Выбор тарифа активен; остальные настройки — визуальные заглушки без реализации логики.
+     * Выбор тарифа активен; настройка «Использовать группы» доступна только для тарифа Про.
      * @param {Object} props
      * @param {string} props.tier - Текущий тариф ('free' | 'basic' | 'pro')
      * @param {Function} props.onTierChange - Колбэк смены тарифа
+     * @param {boolean} props.useGroups - Включены ли группы
+     * @param {Function} props.onUseGroupsChange - Колбэк переключения групп
+     * @param {Array} props.groups - Массив групп [{ id, name, percent }]
+     * @param {Function} props.onAddGroup - Колбэк добавления группы (name, percent)
+     * @param {Function} props.onRemoveGroup - Колбэк удаления группы (id)
      */
-    function SettingsPage({ tier, onTierChange }) {
+    function SettingsPage({ tier, onTierChange, useGroups, onUseGroupsChange, groups, onAddGroup, onRemoveGroup }) {
       const TIERS = [
         { id: 'free', label: 'Бесплатный' },
         { id: 'basic', label: 'Базовый' },
         { id: 'pro', label: 'Про' },
       ];
+
+      // Локальное состояние для формы добавления группы
+      const [newGroupName, setNewGroupName] = useState('');
+      const [newGroupPercent, setNewGroupPercent] = useState('');
+
+      // Сумма процентов групп
+      const sumGroupPercents = groups.reduce((s, g) => s + g.percent, 0);
+
+      /**
+       * Обработчик добавления группы.
+       * Валидирует название и процент, вызывает onAddGroup.
+       */
+      const handleAddGroup = () => {
+        const name = newGroupName.trim();
+        const percent = parseFloat(newGroupPercent);
+        if (!name) { alert('Введите название группы'); return; }
+        if (isNaN(percent) || percent <= 0 || percent > 100) { alert('Доля группы должна быть от 0 до 100'); return; }
+        onAddGroup(name, percent);
+        setNewGroupName('');
+        setNewGroupPercent('');
+      };
 
       return (
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
@@ -653,21 +853,92 @@
               </div>
             </div>
 
-            {/* Выключатель «Использовать группы» — заглушка */}
+            {/* Выключатель «Использовать группы (Про)» */}
             <div className="flex items-center justify-between py-4 border-b border-slate-200">
               <div>
-                <div className="font-medium text-slate-800">Использовать группы</div>
+                <div className="font-medium text-slate-800">
+                  Использовать группы <span className="text-xs font-semibold text-purple-600 bg-purple-50 px-1.5 py-0.5 rounded">Про</span>
+                </div>
                 <div className="text-sm text-slate-500">Группировка активов по категориям</div>
               </div>
               <button
                 type="button"
-                disabled
-                className="relative w-12 h-6 rounded-full bg-slate-300 transition-colors cursor-not-allowed"
-                aria-label="Использовать группы (неактивно)"
+                disabled={tier !== 'pro'}
+                onClick={() => onUseGroupsChange(!useGroups)}
+                className={`relative w-12 h-6 rounded-full transition-colors ${
+                  useGroups ? 'bg-blue-600' : 'bg-slate-300'
+                } ${tier !== 'pro' ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
+                aria-label="Использовать группы"
               >
-                <span className="absolute top-0.5 left-0.5 w-5 h-5 rounded-full bg-white shadow" />
+                <span className={`absolute top-0.5 w-5 h-5 rounded-full bg-white shadow transition-all ${useGroups ? 'left-[26px]' : 'left-0.5'}`} />
               </button>
             </div>
+
+            {/* Блок управления группами — виден только при включённых группах и тарифе Про */}
+            {useGroups && tier === 'pro' && (
+              <div className="py-4 border-b border-slate-200">
+                <div className="font-medium text-slate-800 mb-2">Группы активов</div>
+                <div className="text-sm text-slate-500 mb-3">
+                  Добавьте названия групп и их долю в портфеле. Сумма долей всех групп должна быть 100%.
+                </div>
+
+                {/* Форма добавления группы */}
+                <div className="flex flex-wrap gap-2 mb-3">
+                  <input
+                    type="text"
+                    value={newGroupName}
+                    onChange={(e) => setNewGroupName(e.target.value)}
+                    placeholder="Название группы (например, Акции)"
+                    className="flex-1 min-w-[200px] px-3 py-2 border border-slate-300 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <input
+                    type="text"
+                    inputMode="decimal"
+                    value={newGroupPercent}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === '' || /^\d+\.?\d*$/.test(v) || /^\d*\.?\d+$/.test(v)) setNewGroupPercent(v);
+                    }}
+                    placeholder="Доля %"
+                    className="w-24 px-3 py-2 border border-slate-300 rounded text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddGroup}
+                    className="px-4 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 transition-colors"
+                  >
+                    ➕ Добавить
+                  </button>
+                </div>
+
+                {/* Список групп */}
+                {groups.length > 0 && (
+                  <div className="space-y-2">
+                    {groups.map(g => (
+                      <div key={g.id} className="flex items-center justify-between bg-slate-50 rounded-lg px-3 py-2 border border-slate-200">
+                        <div className="flex items-center gap-3">
+                          <span className="font-medium text-slate-800">{g.name}</span>
+                          <span className="text-sm text-slate-500">{g.percent.toFixed(2)}%</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onRemoveGroup(g.id)}
+                          className="p-1 text-slate-400 hover:text-red-600 transition-colors"
+                          title="Удалить группу"
+                        >
+                          🗑️
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {/* Индикатор суммы долей групп */}
+                <div className={`mt-3 text-sm font-medium ${Math.abs(sumGroupPercents - 100) <= 0.01 ? 'text-emerald-600' : 'text-amber-600'}`}>
+                  Сумма долей: {sumGroupPercents.toFixed(2)}% {Math.abs(sumGroupPercents - 100) <= 0.01 ? '✅' : '(должна быть 100%)'}
+                </div>
+              </div>
+            )}
 
             {/* Процент брокера за покупку активов — заглушка */}
             <div className="flex items-center justify-between py-4 border-b border-slate-200">
@@ -700,7 +971,7 @@
             </div>
 
             <div className="mt-4 p-4 bg-slate-100 rounded-lg text-slate-600 text-sm">
-              ⚙️ Настройки пока неактивны и будут реализованы позже.
+              ⚙️ Настройки брокера пока неактивны и будут реализованы позже.
             </div>
           </div>
         </div>
@@ -745,6 +1016,13 @@
       /** Текущий тариф: 'free' (Бесплатный), 'basic' (Базовый), 'pro' (Про). По умолчанию — Базовый */
       const [tier, setTier] = useState('basic');
 
+      /** Включены ли группы активов (доступно только на тарифе Про) */
+      const [useGroups, setUseGroups] = useState(() => savedData?.useGroups ?? false);
+      /** Массив групп активов [{ id, name, percent }] */
+      const [groups, setGroups] = useState(() => savedData?.groups ?? []);
+      /** Счётчик ID групп */
+      const [nextGroupId, setNextGroupId] = useState(() => savedData?.nextGroupId ?? 1);
+
       /** Максимальное количество активов в портфеле в зависимости от тарифа */
       const maxAssets = useMemo(() => {
         return tier === 'free' ? 2 : 100;
@@ -758,7 +1036,7 @@
         return calculatedAnalysis ?? [];
       }, [calculatedAnalysis]);
 
-      const portfolioValidation = useMemo(() => AssetValidator.validatePortfolio(assets), [assets]);
+      const portfolioValidation = useMemo(() => AssetValidator.validatePortfolio(assets, useGroups ? groups : null), [assets, useGroups, groups]);
 
       // ========================================================================
       // HELPERS
@@ -771,22 +1049,22 @@
       // ========================================================================
 
       const handleUpdateAsset = useCallback((updatedAsset) => {
-        const validation = AssetValidator.validate(updatedAsset);
+        const validation = AssetValidator.validate(updatedAsset, useGroups);
         if (!validation.isValid) { setError(validation.errors[0]); return; }
         setAssets(prevAssets => {
           const oldAsset = prevAssets.find(a => a.id === updatedAsset.id);
           const updated = prevAssets.map(a => a.id === updatedAsset.id ? updatedAsset : a);
-          if (oldAsset && (oldAsset.ticker !== updatedAsset.ticker || oldAsset.targetPercent !== updatedAsset.targetPercent)) {
+          if (oldAsset && (oldAsset.ticker !== updatedAsset.ticker || oldAsset.targetPercent !== updatedAsset.targetPercent || oldAsset.groupId !== updatedAsset.groupId)) {
             setTimeout(() => resetCalculation(), 0);
           }
           return updated;
         });
         setError(null);
-      }, [resetCalculation]);
+      }, [resetCalculation, useGroups]);
 
       const handleAddAsset = useCallback(() => {
         setNextId(prev => prev + 1);
-        setAssets(prevAssets => [...prevAssets, { id: nextId, ticker: '', quantity: 0, price: 0, targetPercent: 0 }]);
+        setAssets(prevAssets => [...prevAssets, { id: nextId, ticker: '', quantity: 0, price: 0, targetPercent: 0, groupId: null }]);
         setError(null);
         resetCalculation();
       }, [nextId, resetCalculation]);
@@ -836,7 +1114,7 @@
         const budget = cashBalance + additionalCash;
 
         setTimeout(() => {
-          const { analysis: rawAnalysis, cashSpent } = PortfolioCalculator.analyzePortfolio(assets, effectiveTotalValue, budget);
+          const { analysis: rawAnalysis, cashSpent } = PortfolioCalculator.analyzePortfolio(assets, effectiveTotalValue, budget, useGroups ? groups : null);
           setCashBalance(prev => {
             const totalAvailable = prev + additionalCash;
             return PortfolioCalculator.floorMoney(totalAvailable - cashSpent);
@@ -849,7 +1127,7 @@
           setAnimationKey(prev => prev + 1);
           setTimeout(() => setIsCalculated(false), 2000);
         }, 400);
-      }, [assets, cashBalance, additionalCash]);
+      }, [assets, cashBalance, additionalCash, useGroups, groups]);
 
       /**
        * Обработчик пустоты поля "Цель" для конкретного актива.
@@ -863,8 +1141,8 @@
       }, []);
 
       const handleDistributeEvenly = useCallback(() => {
-        setAssets(prevAssets => PortfolioCalculator.distributeTargets(prevAssets, emptyTargetIds));
-      }, [emptyTargetIds]);
+        setAssets(prevAssets => PortfolioCalculator.distributeTargets(prevAssets, emptyTargetIds, useGroups ? groups : null));
+      }, [emptyTargetIds, useGroups, groups]);
 
       /**
        * Удаляет id актива из appliedAdjustmentIds при изменении количества.
@@ -878,22 +1156,70 @@
         });
       }, []);
 
+      /**
+       * Переключение режима групп.
+       * При выключении групп сбрасываем groupId у всех активов.
+       * @param {boolean} value - Новое значение useGroups
+       */
+      const handleUseGroupsChange = useCallback((value) => {
+        setUseGroups(value);
+        if (!value) {
+          // При выключении групп очищаем groupId у всех активов
+          setAssets(prevAssets => prevAssets.map(a => ({ ...a, groupId: null })));
+        }
+        resetCalculation();
+      }, [resetCalculation]);
+
+      /**
+       * Добавление новой группы.
+       * @param {string} name - Название группы
+       * @param {number} percent - Доля группы в портфеле (%)
+       */
+      const handleAddGroup = useCallback((name, percent) => {
+        setNextGroupId(prev => prev + 1);
+        setGroups(prevGroups => [...prevGroups, { id: nextGroupId, name, percent }]);
+        resetCalculation();
+      }, [nextGroupId, resetCalculation]);
+
+      /**
+       * Удаление группы.
+       * Активы удалённой группы получают groupId = null.
+       * @param {number} id - ID группы
+       */
+      const handleRemoveGroup = useCallback((id) => {
+        setGroups(prevGroups => prevGroups.filter(g => g.id !== id));
+        setAssets(prevAssets => prevAssets.map(a => a.groupId === id ? { ...a, groupId: null } : a));
+        resetCalculation();
+      }, [resetCalculation]);
+
+      /**
+       * Смена тарифа.
+       * При переходе на тариф ниже Про выключаем группы.
+       * @param {string} newTier - Новый тариф
+       */
+      const handleTierChange = useCallback((newTier) => {
+        setTier(newTier);
+        if (newTier !== 'pro' && useGroups) {
+          handleUseGroupsChange(false);
+        }
+      }, [useGroups, handleUseGroupsChange]);
+
       // ========================================================================
       // PERSISTENCE EFFECTS & HANDLERS
       // ========================================================================
 
       useEffect(() => {
-        PortfolioStorage.save({ assets, nextId, cashBalance });
-      }, [assets, nextId, cashBalance]);
+        PortfolioStorage.save({ assets, nextId, cashBalance, useGroups, groups, nextGroupId });
+      }, [assets, nextId, cashBalance, useGroups, groups, nextGroupId]);
 
       useEffect(() => { handleRefreshPrices(); }, []);
 
       const fileInputRef = useRef(null);
 
       const handleExport = useCallback(() => {
-        try { PortfolioStorage.exportToFile({ assets, nextId, cashBalance }); }
+        try { PortfolioStorage.exportToFile({ assets, nextId, cashBalance, useGroups, groups, nextGroupId }); }
         catch (err) { setError(err.message); }
-      }, [assets, nextId, cashBalance]);
+      }, [assets, nextId, cashBalance, useGroups, groups, nextGroupId]);
 
       const handleImport = useCallback(async (e) => {
         const file = e.target.files[0];
@@ -903,6 +1229,9 @@
           setAssets(data.assets);
           setNextId(data.nextId);
           if (data.cashBalance != null) setCashBalance(data.cashBalance);
+          setUseGroups(data.useGroups ?? false);
+          setGroups(data.groups ?? []);
+          setNextGroupId(data.nextGroupId ?? 1);
           setAdditionalCash(0);
           setAppliedAdjustmentIds(new Set());
           resetCalculation();
@@ -917,6 +1246,9 @@
         setNextId(1);
         setCashBalance(0);
         setAdditionalCash(0);
+        setUseGroups(false);
+        setGroups([]);
+        setNextGroupId(1);
         setIsCalculated(false);
         setCalculatedAnalysis(null);
         setEmptyTargetIds(new Set());
@@ -977,7 +1309,15 @@
           </div>
 
           {activePage === 'settings' ? (
-            <SettingsPage tier={tier} onTierChange={setTier} />
+            <SettingsPage
+              tier={tier}
+              onTierChange={handleTierChange}
+              useGroups={useGroups}
+              onUseGroupsChange={handleUseGroupsChange}
+              groups={groups}
+              onAddGroup={handleAddGroup}
+              onRemoveGroup={handleRemoveGroup}
+            />
           ) : activePage === 'tariffs' ? (
             <TariffsPage />
           ) : (
@@ -999,7 +1339,7 @@
               <>
                 <div className="bg-white rounded-lg shadow-md border border-slate-200 overflow-x-auto">
                   <table className="w-full min-w-[700px]">
-                    <PortfolioHeader />
+                    <PortfolioHeader useGroups={useGroups} />
                     <tbody key={animationKey}>
                       {assets.map((asset, index) => (
                         <AssetRow
@@ -1016,6 +1356,8 @@
                           animate={isCalculated}
                           animateDelay={index}
                           isAdjustmentActive={appliedAdjustmentIds.has(asset.id)}
+                          useGroups={useGroups}
+                          groups={groups}
                         />
                       ))}
                     </tbody>
