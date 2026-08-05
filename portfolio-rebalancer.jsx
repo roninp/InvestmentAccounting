@@ -567,10 +567,18 @@ function AssetRow({ asset, analysis, onUpdate, onRemove, onDistributeEqually, on
     return 'text-gray-600';
   };
 
+  /**
+   * Цвет колонки «Текущий %» по отклонению актива от целевой доли.
+   * Отстаёт (нужно докупить) — зелёный, опережает (нужно продать) — красный,
+   * баланс — зелёный (как у недостающего актива).
+   * @param {number} current - Текущий процент актива
+   * @param {number} target - Целевой процент актива
+   * @returns {string} Tailwind-классы цвета
+   */
   const getPercentageColor = (current, target) => {
-    if (Math.abs(current - target) < 1) return 'bg-emerald-100 text-emerald-900';
-    if (current > target) return 'bg-amber-100 text-amber-900';
-    return 'bg-blue-100 text-blue-900';
+    if (current < target) return 'bg-green-50 text-green-700';
+    if (current > target) return 'bg-red-50 text-red-700';
+    return 'bg-green-50 text-green-700';
   };
 
   return (
@@ -674,9 +682,12 @@ function AssetRow({ asset, analysis, onUpdate, onRemove, onDistributeEqually, on
 }
 
 /**
- * Заголовок таблицы — статический компонент.
+ * Заголовок таблицы.
+ * @param {Object} props
+ * @param {boolean} props.canApplyAll - Доступна ли кнопка «Применить ко всем» (есть расчёт)
+ * @param {Function} props.onApplyAll - Колбэк применения требуемого количества ко всем активам
  */
-function PortfolioHeader() {
+function PortfolioHeader({ canApplyAll, onApplyAll }) {
   return (
     <thead className="bg-gradient-to-r from-slate-900 to-slate-800 text-white">
       <tr>
@@ -687,7 +698,19 @@ function PortfolioHeader() {
         <th className="px-4 py-3 text-left text-sm font-semibold">Цель %</th>
         <th className="px-4 py-3 text-center text-sm font-semibold">Текущий %</th>
         <th className="px-4 py-3 text-right text-sm font-semibold">Требуется</th>
-        <th className="px-4 py-3 text-right text-sm font-semibold">Купить/Продать</th>
+        <th className="px-4 py-3 text-right text-sm font-semibold">
+          <div className="flex items-center justify-end gap-2">
+            <span>Купить/Продать</span>
+            <button
+              onClick={onApplyAll}
+              disabled={!canApplyAll}
+              className="px-2 py-1 rounded bg-blue-500 text-white text-xs font-medium hover:bg-blue-400 disabled:bg-slate-500 disabled:cursor-not-allowed transition-colors"
+              title="Применить требуемое количество ко всем активам"
+            >
+              Применить ко всем
+            </button>
+          </div>
+        </th>
         <th className="px-4 py-3 text-center text-sm font-semibold">Удалить</th>
       </tr>
     </thead>
@@ -1087,6 +1110,20 @@ export default function PortfolioRebalancer() {
     setAssets(prevAssets => PortfolioCalculator.distributeTargets(prevAssets, emptyTargetIds));
   }, [emptyTargetIds]);
 
+  /**
+   * Применить требуемое количество ко всем активам.
+   * Обновляет количество каждого актива до округлённого requiredQuantity
+   * из последнего расчёта и сбрасывает флаг расчёта.
+   */
+  const handleApplyAllAdjustments = useCallback(() => {
+    setAssets(prevAssets => prevAssets.map(a => {
+      const aAnalysis = calculatedAnalysis?.find(an => an.id === a.id);
+      if (!aAnalysis) return a;
+      return { ...a, quantity: Math.round(aAnalysis.requiredQuantity) };
+    }));
+    resetCalculation();
+  }, [calculatedAnalysis, resetCalculation]);
+
   // ========================================================================
   // RENDER
   // ========================================================================
@@ -1163,7 +1200,10 @@ export default function PortfolioRebalancer() {
           <>
             <div className="bg-white rounded-lg shadow-md border border-slate-200 overflow-hidden">
               <table className="w-full">
-                <PortfolioHeader />
+                <PortfolioHeader
+                  canApplyAll={analysis.length > 0}
+                  onApplyAll={handleApplyAllAdjustments}
+                />
                 <tbody key={animationKey}>
                   {assets.map((asset, index) => (
                     <AssetRow
@@ -1283,8 +1323,9 @@ export default function PortfolioRebalancer() {
             <li>Введите тикер актива и нажмите "Обновить цены" для загрузки текущих котировок</li>
             <li>Установите целевой процент для каждого актива (сумма должна быть 100%)</li>
             <li>Нажмите <strong>«Рассчитать»</strong> для выполнения расчёта ребалансировки</li>
-            <li>Колонка "Купить/Продать" показывает необходимые действия для ребалансировки</li>
-            <li>Зелёный цвет — актив в целевых пропорциях, жёлтый — избыточный, синий — недостаточный</li>
+            <li>Колонка "Купить/Продать" показывает необходимые действия: зелёный «+» — докупить, красный «−» — продать</li>
+            <li>Кнопка "Применить ко всем" в шапке таблицы обновляет количество всех активов до требуемого</li>
+            <li>Колонка "Текущий %": зелёный — актив отстаёт (докупить), красный — опережает (продать), баланс — зелёный</li>
           </ul>
         </div>
       </div>

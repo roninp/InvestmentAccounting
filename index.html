@@ -623,30 +623,23 @@
     }
 
     /**
-     * Палитра цветов для визуального выделения групп активов.
-     * Каждая группа получает свой цвет по индексу в массиве groups.
-     * @type {Array<{row: string, badge: string, dot: string}>}
+     * Палитра цветов для выбора при создании группы активов.
+     * Пользователь выбирает цвет из этого набора через color picker.
+     * @type {string[]} Массив hex-цветов
      */
-    const GROUP_COLORS = [
-      { row: 'bg-blue-50/60', badge: 'bg-blue-100 text-blue-800', dot: 'bg-blue-500' },
-      { row: 'bg-emerald-50/60', badge: 'bg-emerald-100 text-emerald-800', dot: 'bg-emerald-500' },
-      { row: 'bg-purple-50/60', badge: 'bg-purple-100 text-purple-800', dot: 'bg-purple-500' },
-      { row: 'bg-amber-50/60', badge: 'bg-amber-100 text-amber-800', dot: 'bg-amber-500' },
-      { row: 'bg-rose-50/60', badge: 'bg-rose-100 text-rose-800', dot: 'bg-rose-500' },
-      { row: 'bg-cyan-50/60', badge: 'bg-cyan-100 text-cyan-800', dot: 'bg-cyan-500' },
-    ];
+    const GROUP_COLORS = ['#3b82f6', '#10b981', '#8b5cf6', '#f59e0b', '#f43f5e', '#06b6d4'];
 
     /**
-     * Получить цвет группы по её id.
+     * Получить hex-цвет группы по её id.
+     * Если группа не найдена или groupId == null — возвращается серый (slate-400).
      * @param {number|null} groupId - ID группы
-     * @param {Array} groups - Массив групп
-     * @returns {{row: string, badge: string, dot: string}} Цветовые классы
+     * @param {Array} groups - Массив групп [{ id, name, percent, color }]
+     * @returns {string} Hex-цвет группы (например '#3b82f6')
      */
     function getGroupColor(groupId, groups) {
-      if (groupId == null) return { row: '', badge: 'bg-slate-100 text-slate-600', dot: 'bg-slate-400' };
-      const index = groups.findIndex(g => g.id === groupId);
-      if (index === -1) return { row: '', badge: 'bg-slate-100 text-slate-600', dot: 'bg-slate-400' };
-      return GROUP_COLORS[index % GROUP_COLORS.length];
+      if (groupId == null) return '#94a3b8'; // slate-400
+      const group = groups.find(g => g.id === groupId);
+      return group?.color || '#94a3b8';
     }
 
     /**
@@ -673,17 +666,27 @@
         if (adj < -0.1) return 'text-red-600 bg-red-50';
         return 'text-gray-600';
       };
+      /**
+       * Цвет колонки «Текущий %» по отклонению актива от целевой доли.
+       * Отстаёт (нужно докупить) — зелёный, опережает (нужно продать) — красный,
+       * баланс — зелёный (как у недостающего актива).
+       * @param {number} current - Текущий процент актива
+       * @param {number} target - Целевой процент актива
+       * @returns {string} Tailwind-классы цвета
+       */
       const getPercentageColor = (current, target) => {
-        if (Math.abs(current - target) < 1) return 'bg-emerald-100 text-emerald-900';
-        if (current > target) return 'bg-amber-100 text-amber-900';
-        return 'bg-blue-100 text-blue-900';
+        if (current < target) return 'bg-green-50 text-green-700';
+        if (current > target) return 'bg-red-50 text-red-700';
+        return 'bg-green-50 text-green-700';
       };
       const delayClass = animate ? `animate-delay-${Math.min(animateDelay + 1, 10)}` : '';
-      // Цвет группы для визуального выделения строки
-      const groupColor = useGroups ? getGroupColor(asset.groupId, groups) : { row: '', badge: '', dot: '' };
+      // Цвет группы для визуального выделения строки (hex-строка)
+      const groupColorHex = useGroups ? getGroupColor(asset.groupId, groups) : null;
+      // Фон строки — цвет группы с 10% прозрачностью (hex + '1A')
+      const rowStyle = groupColorHex ? { backgroundColor: groupColorHex + '1A' } : undefined;
 
       return (
-        <tr className={`border-b border-slate-200 hover:bg-slate-50 transition-colors ${groupColor.row} ${animate ? `animate-fade-in ${delayClass}` : ''}`}>
+        <tr className={`border-b border-slate-200 hover:bg-slate-50 transition-colors ${animate ? `animate-fade-in ${delayClass}` : ''}`} style={rowStyle}>
           <td className="px-2 sm:px-4 py-3 font-medium text-slate-900">
             <input type="text" value={asset.ticker} onChange={(e) => onUpdate({ ...asset, ticker: e.target.value.toUpperCase() })}
               className="w-32 px-2 py-1 border border-slate-300 rounded font-mono text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
@@ -692,7 +695,7 @@
           {useGroups && (
             <td className="px-2 sm:px-4 py-3">
               <div className="flex items-center gap-2">
-                <span className={`inline-block w-2.5 h-2.5 rounded-full ${groupColor.dot} flex-shrink-0`} />
+                <span className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: groupColorHex || '#94a3b8' }} />
                 <select
                   value={asset.groupId ?? ''}
                   onChange={(e) => onUpdate({ ...asset, groupId: e.target.value === '' ? null : Number(e.target.value) })}
@@ -759,8 +762,10 @@
      * Заголовок таблицы портфеля.
      * @param {Object} props
      * @param {boolean} props.useGroups - Включены ли группы (показывает колонку «Группа»)
+     * @param {boolean} props.canApplyAll - Доступна ли кнопка «Применить ко всем» (есть расчёт)
+     * @param {Function} props.onApplyAll - Колбэк применения требуемого количества ко всем активам
      */
-    function PortfolioHeader({ useGroups }) {
+    function PortfolioHeader({ useGroups, canApplyAll, onApplyAll }) {
       return (
         <thead className="bg-gradient-to-r from-slate-900 to-slate-800 text-white">
           <tr>
@@ -772,7 +777,19 @@
             <th className="px-2 sm:px-4 py-3 text-left text-sm font-semibold">Цель %</th>
             <th className="px-2 sm:px-4 py-3 text-center text-sm font-semibold">Текущий %</th>
             <th className="px-2 sm:px-4 py-3 text-right text-sm font-semibold">Требуется</th>
-            <th className="px-2 sm:px-4 py-3 text-right text-sm font-semibold">Купить/Продать</th>
+            <th className="px-2 sm:px-4 py-3 text-right text-sm font-semibold">
+              <div className="flex items-center justify-end gap-2">
+                <span>Купить/Продать</span>
+                <button
+                  onClick={onApplyAll}
+                  disabled={!canApplyAll}
+                  className="px-2 py-1 rounded bg-blue-500 text-white text-xs font-medium hover:bg-blue-400 disabled:bg-slate-500 disabled:cursor-not-allowed transition-colors"
+                  title="Применить требуемое количество ко всем активам"
+                >
+                  Применить ко всем
+                </button>
+              </div>
+            </th>
             <th className="px-2 sm:px-4 py-3 text-center text-sm font-semibold">Удалить</th>
           </tr>
         </thead>
@@ -833,22 +850,24 @@
           <div className="text-sm font-semibold text-slate-700 mb-3">Доли групп в портфеле</div>
           <div className="space-y-3">
             {data.map(item => {
-              // Цвет отклонения: зелёный — в пределах 1%, жёлтый — до 5%, красный — больше
-              const diffColor = Math.abs(item.diff) < 1
-                ? 'text-emerald-600'
-                : Math.abs(item.diff) < 5
-                  ? 'text-amber-600'
-                  : 'text-red-600';
-              const barColor = item.color.dot;
+              // Отклонение группы от целевой доли:
+              // - отстаёт (нужно докупить) — зелёным с '+'
+              // - опережает (нужно продать) — красным с '-'
+              // - баланс (|diff| < 1) — зелёным без знака
+              const isUnderweight = item.currentPercent < item.targetPercent;
+              const isOverweight = item.currentPercent > item.targetPercent;
+              const isBalanced = Math.abs(item.diff) < 1;
+              const diffColor = isUnderweight || isBalanced ? 'text-green-600' : isOverweight ? 'text-red-600' : 'text-green-600';
+              const diffSign = isUnderweight ? '+' : isOverweight ? '-' : '';
               return (
                 <div key={item.id} className="flex items-center gap-3">
-                  <span className={`inline-block w-2.5 h-2.5 rounded-full ${item.color.dot} flex-shrink-0`} />
-                  <span className={`inline-block px-2 py-0.5 rounded text-xs font-medium ${item.color.badge}`}>{item.name}</span>
+                  <span className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: item.color }} />
+                  <span className="inline-block px-2 py-0.5 rounded text-xs font-medium text-white" style={{ backgroundColor: item.color }}>{item.name}</span>
                   <div className="flex-1">
                     <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
                       <div
-                        className={`h-full rounded-full transition-all ${barColor}`}
-                        style={{ width: `${Math.min(Math.max(item.currentPercent, 0), 100)}%` }}
+                        className="h-full rounded-full transition-all"
+                        style={{ width: `${Math.min(Math.max(item.currentPercent, 0), 100)}%`, backgroundColor: item.color }}
                       />
                     </div>
                   </div>
@@ -857,7 +876,7 @@
                       {item.currentPercent.toFixed(2)}% <span className="text-slate-400 text-xs">/ {item.targetPercent.toFixed(2)}%</span>
                     </div>
                     <div className={`text-xs font-medium ${diffColor}`}>
-                      {item.diff > 0 ? '+' : ''}{item.diff.toFixed(2)}%
+                      {diffSign}{item.diff.toFixed(2)}%
                     </div>
                   </div>
                 </div>
@@ -905,22 +924,25 @@
       // Локальное состояние для формы добавления группы
       const [newGroupName, setNewGroupName] = useState('');
       const [newGroupPercent, setNewGroupPercent] = useState('');
+      // Выбранный цвет группы (по умолчанию — первый из палитры)
+      const [newGroupColor, setNewGroupColor] = useState(GROUP_COLORS[0]);
 
       // Сумма процентов групп
       const sumGroupPercents = groups.reduce((s, g) => s + g.percent, 0);
 
       /**
        * Обработчик добавления группы.
-       * Валидирует название и процент, вызывает onAddGroup.
+       * Валидирует название и процент, вызывает onAddGroup с выбранным цветом.
        */
       const handleAddGroup = () => {
         const name = newGroupName.trim();
         const percent = parseFloat(newGroupPercent);
         if (!name) { alert('Введите название группы'); return; }
         if (isNaN(percent) || percent <= 0 || percent > 100) { alert('Доля группы должна быть от 0 до 100'); return; }
-        onAddGroup(name, percent);
+        onAddGroup(name, percent, newGroupColor);
         setNewGroupName('');
         setNewGroupPercent('');
+        setNewGroupColor(GROUP_COLORS[0]);
       };
 
       return (
@@ -1000,6 +1022,16 @@
                     placeholder="Доля %"
                     className="w-24 px-3 py-2 border border-slate-300 rounded text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500"
                   />
+                  {/* Выбор цвета группы через color picker */}
+                  <label className="flex items-center gap-2 px-3 py-2 border border-slate-300 rounded text-sm cursor-pointer hover:border-blue-400 transition-colors" title="Выбрать цвет группы">
+                    <input
+                      type="color"
+                      value={newGroupColor}
+                      onChange={(e) => setNewGroupColor(e.target.value)}
+                      className="w-8 h-8 border-0 rounded cursor-pointer"
+                    />
+                    <span className="text-slate-600">Цвет</span>
+                  </label>
                   <button
                     type="button"
                     onClick={handleAddGroup}
@@ -1015,6 +1047,7 @@
                     {groups.map(g => (
                       <div key={g.id} className="flex items-center justify-between bg-slate-50 rounded-lg px-3 py-2 border border-slate-200">
                         <div className="flex items-center gap-3">
+                          <span className="inline-block w-3 h-3 rounded-full flex-shrink-0" style={{ backgroundColor: g.color || '#94a3b8' }} />
                           <span className="font-medium text-slate-800">{g.name}</span>
                           <span className="text-sm text-slate-500">{g.percent.toFixed(2)}%</span>
                         </div>
@@ -1272,12 +1305,28 @@
        * Добавление новой группы.
        * @param {string} name - Название группы
        * @param {number} percent - Доля группы в портфеле (%)
+       * @param {string} [color] - Выбранный hex-цвет группы (например '#3b82f6')
        */
-      const handleAddGroup = useCallback((name, percent) => {
+      const handleAddGroup = useCallback((name, percent, color) => {
         setNextGroupId(prev => prev + 1);
-        setGroups(prevGroups => [...prevGroups, { id: nextGroupId, name, percent }]);
+        setGroups(prevGroups => [...prevGroups, { id: nextGroupId, name, percent, color: color || '#94a3b8' }]);
         resetCalculation();
       }, [nextGroupId, resetCalculation]);
+
+      /**
+       * Применить требуемое количество ко всем активам.
+       * Обновляет количество каждого актива до округлённого requiredQuantity.
+       * Также деактивирует колонку «Купить/Продать» для всех активов.
+       */
+      const handleApplyAllAdjustments = useCallback(() => {
+        setAssets(prevAssets => prevAssets.map(a => {
+          const aAnalysis = calculatedAnalysis?.find(an => an.id === a.id);
+          if (!aAnalysis) return a;
+          return { ...a, quantity: Math.round(aAnalysis.requiredQuantity) };
+        }));
+        setAppliedAdjustmentIds(new Set());
+        resetCalculation();
+      }, [calculatedAnalysis, resetCalculation]);
 
       /**
        * Удаление группы.
@@ -1441,7 +1490,11 @@
               <>
                 <div className="bg-white rounded-lg shadow-md border border-slate-200 overflow-x-auto">
                   <table className="w-full min-w-[700px]">
-                    <PortfolioHeader useGroups={useGroups} />
+                    <PortfolioHeader
+                      useGroups={useGroups}
+                      canApplyAll={analysis.length > 0}
+                      onApplyAll={handleApplyAllAdjustments}
+                    />
                     <tbody key={animationKey}>
                       {assets.map((asset, index) => (
                         <AssetRow
@@ -1521,8 +1574,9 @@
                 <li>Установите целевой процент для каждого актива (сумма должна быть 100%)</li>
                 <li>Добавьте деньги через поле <strong>Деньги</strong> справа, остаток сохраняется между расчётами</li>
                 <li>Нажмите <strong>«Рассчитать»</strong> для выполнения расчёта ребалансировки</li>
-                <li>Колонка <strong>Купить/Продать</strong> показывает необходимые действия для ребалансировки</li>
-                <li>Зелёный цвет — актив в целевых пропорциях, жёлтый — избыточный, синий — недостаточный</li>
+                <li>Колонка <strong>Купить/Продать</strong> показывает необходимые действия: зелёный «+» — докупить, красный «−» — продать</li>
+                <li>Кнопка <strong>«Применить ко всем»</strong> в шапке таблицы обновляет количество всех активов до требуемого</li>
+                <li>Колонка <strong>Текущий %</strong>: зелёный — актив отстаёт (докупить), красный — опережает (продать), баланс — зелёный</li>
               </ul>
             </div>
           </div>
