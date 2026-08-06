@@ -667,17 +667,18 @@
         return 'text-gray-600';
       };
       /**
-       * Цвет колонки «Текущий %» по отклонению актива от целевой доли.
-       * Отстаёт (нужно докупить) — зелёный, опережает (нужно продать) — красный,
-       * баланс — зелёный (как у недостающего актива).
+       * Стили колонки «Текущий %» по отклонению актива от целевой доли.
+       * Отстаёт (нужно докупить) — фон #FEF2F2, текст #BA1C1D;
+       * опережает (нужно продать) — фон #F0FDF4, текст #298049;
+       * баланс — как у отстающего актива.
        * @param {number} current - Текущий процент актива
        * @param {number} target - Целевой процент актива
-       * @returns {string} Tailwind-классы цвета
+       * @returns {Object} Inline-стили { backgroundColor, color }
        */
       const getPercentageColor = (current, target) => {
-        if (current < target) return 'bg-green-50 text-green-700';
-        if (current > target) return 'bg-red-50 text-red-700';
-        return 'bg-green-50 text-green-700';
+        if (current < target) return { backgroundColor: '#FEF2F2', color: '#BA1C1D' };
+        if (current > target) return { backgroundColor: '#F0FDF4', color: '#298049' };
+        return { backgroundColor: '#FEF2F2', color: '#BA1C1D' };
       };
       const delayClass = animate ? `animate-delay-${Math.min(animateDelay + 1, 10)}` : '';
       // Цвет группы для визуального выделения строки (hex-строка)
@@ -730,7 +731,7 @@
           </td>
           <td className="px-2 sm:px-4 py-3 text-center">
             {analysis ? (
-              <span className={`inline-block px-3 py-1 rounded-full text-sm font-medium ${getPercentageColor(analysis.currentPercent, asset.targetPercent)}`}>
+              <span className="inline-block px-3 py-1 rounded-full text-sm font-medium" style={getPercentageColor(analysis.currentPercent, asset.targetPercent)}>
                 {analysis.currentPercent.toFixed(1)}%
               </span>
             ) : <span className="text-slate-400">—</span>}
@@ -851,13 +852,24 @@
           <div className="space-y-3">
             {data.map(item => {
               // Отклонение группы от целевой доли:
-              // - отстаёт (нужно докупить) — зелёным с '+'
-              // - опережает (нужно продать) — красным с '-'
-              // - баланс (|diff| < 1) — зелёным без знака
+              // - отстаёт (нужно докупить) — текущий % на фоне #FEF2F2 с текстом #BA1C1D,
+              //   отклонение со знаком '+' и цветом #298049
+              // - опережает (нужно продать) — текущий % на фоне #F0FDF4 с текстом #298049,
+              //   отклонение со знаком '-' и цветом #BA1C1D
               const isUnderweight = item.currentPercent < item.targetPercent;
               const isOverweight = item.currentPercent > item.targetPercent;
-              const isBalanced = Math.abs(item.diff) < 1;
-              const diffColor = isUnderweight || isBalanced ? 'text-green-600' : isOverweight ? 'text-red-600' : 'text-green-600';
+              // Стили текущего процента группы: отстаёт — красный фон/текст, опережает — зелёный фон/текст
+              const percentStyle = isUnderweight
+                ? { backgroundColor: '#FEF2F2', color: '#BA1C1D' }
+                : isOverweight
+                  ? { backgroundColor: '#F0FDF4', color: '#298049' }
+                  : { backgroundColor: '#FEF2F2', color: '#BA1C1D' };
+              // Стили отклонения: отстаёт — зелёный '+', опережает — красный '-'
+              const diffStyle = isUnderweight
+                ? { color: '#298049' }
+                : isOverweight
+                  ? { color: '#BA1C1D' }
+                  : { color: '#298049' };
               const diffSign = isUnderweight ? '+' : isOverweight ? '-' : '';
               return (
                 <div key={item.id} className="flex items-center gap-3">
@@ -872,10 +884,10 @@
                     </div>
                   </div>
                   <div className="text-right flex-shrink-0">
-                    <div className="text-sm font-medium text-slate-700">
-                      {item.currentPercent.toFixed(2)}% <span className="text-slate-400 text-xs">/ {item.targetPercent.toFixed(2)}%</span>
+                    <div className="inline-block px-2 py-0.5 rounded text-sm font-medium" style={percentStyle}>
+                      {item.currentPercent.toFixed(2)}% <span className="text-xs opacity-60">/ {item.targetPercent.toFixed(2)}%</span>
                     </div>
-                    <div className={`text-xs font-medium ${diffColor}`}>
+                    <div className="text-xs font-medium" style={diffStyle}>
                       {diffSign}{item.diff.toFixed(2)}%
                     </div>
                   </div>
