@@ -80,22 +80,35 @@ MoexPriceService.resolveIsin(isin)
 
 ```javascript
 /**
- * Получить цену одного актива (по тикеру или ISIN)
+ * Получить цену и размер лота актива (по тикеру или ISIN)
  * @param {string} value - Тикер (например 'SBER') или ISIN (например 'RU000A0JX0J2')
- * @returns {Promise<number>} Цена актива
+ * @returns {Promise<{price: number, lotSize: number|null}>}
+ *   price - цена за одну штуку актива
+ *   lotSize - размер лота в штуках (>= 1) либо null, если определить не удалось
  * @throws {Error} Если актив не найден или нет данных
  */
 MoexPriceService.fetchPrice(value)
 
 /**
- * Получить цены нескольких активов
+ * Получить цены и размеры лотов нескольких активов
  * @param {string[]} tickers - Массив тикеров
- * @returns {Promise<{prices: (number|null)[], errors: string[]}>}
+ * @returns {Promise<{prices: (number|null)[], lotSizes: (number|null)[], errors: string[]}>}
  *   prices - массив цен (null если актив не загрузился)
+ *   lotSizes - массив размеров лотов (null если определить не удалось)
  *   errors - массив сообщений об ошибках
  */
 MoexPriceService.fetchPrices(tickers)
+
+/**
+ * Извлечение размера лота (LOTSIZE) из блока securities ответа ISS API
+ * @param {Object} data - Распарсенный JSON-ответ ISS API
+ * @param {string} boardId - Код доски (BOARDID)
+ * @returns {number|null} Размер лота (>= 1) или null
+ */
+MoexPriceService.extractLotSize(data, boardId)
 ```
+
+**Лотность:** поле `LOTSIZE` (количество штук в одном лоте) приходит в блоке `securities` ответа ISS API. Оно извлекается автоматически при загрузке цены и подставляется в поле «Лот» актива, которое пользователь может отредактировать вручную.
 
 ### Обработка ошибок
 

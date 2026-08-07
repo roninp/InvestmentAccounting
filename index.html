@@ -84,8 +84,31 @@
         return Math.floor(value);
       }
 
+      /**
+       * Безопасное получение размера лота актива (сколько штук в одном лоте).
+       * Лот не может быть меньше 1; некорректные значения нормализуются к 1.
+       * @param {Object} asset - Данные актива
+       * @returns {number} Размер лота (целое, >= 1)
+       */
+      static getLotSize(asset) {
+        const raw = Number(asset && asset.lotSize);
+        return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 1;
+      }
+
+      /**
+       * Округление строго вниз до целого числа лотов.
+       * @param {number} value - Исходное значение (в штуках)
+       * @param {number} lotSize - Сколько штук в одном лоте (>= 1)
+       * @returns {number} Количество лотов, округлённое вниз
+       */
+      static floorToLot(value, lotSize) {
+        const lot = Number.isFinite(lotSize) && lotSize >= 1 ? Math.floor(lotSize) : 1;
+        return Math.floor(value / lot);
+      }
+
       static calculateTotalValue(assets) {
-        return assets.reduce((sum, asset) => sum + (asset.quantity * asset.price), 0);
+        // quantity хранится в ЛОТАХ: стоимость = лоты * штук в лоте * цена за штуку
+        return assets.reduce((sum, asset) => sum + (asset.quantity * this.getLotSize(asset) * asset.price), 0);
       }
 
       /**
@@ -106,22 +129,23 @@
           return assets.map(asset => {
             if (asset.groupId == null) {
               // Актив без группы — процент от всего портфеля (fallback)
-              return (asset.quantity * asset.price) / total * 100;
+              return (asset.quantity * this.getLotSize(asset) * asset.price) / total * 100;
             }
             const groupAssets = assets.filter(a => a.groupId === asset.groupId);
             const groupTotal = this.calculateTotalValue(groupAssets);
             if (groupTotal === 0) return 0;
-            return (asset.quantity * asset.price) / groupTotal * 100;
+            return (asset.quantity * this.getLotSize(asset) * asset.price) / groupTotal * 100;
           });
         }
 
-        return assets.map(asset => (asset.quantity * asset.price) / total * 100);
+        return assets.map(asset => (asset.quantity * this.getLotSize(asset) * asset.price) / total * 100);
       }
 
       static calculateRequiredQuantity(asset, targetPercent, totalValue) {
         if (totalValue === 0 || asset.price === 0) return 0;
-        const raw = (targetPercent / 100) * totalValue / asset.price;
-        return this.floorQuantity(raw);
+        // Желаемая стоимость -> желаемые штуки -> округление вниз до целого числа лотов
+        const rawShares = (targetPercent / 100) * totalValue / asset.price;
+        return this.floorToLot(rawShares, this.getLotSize(asset));
       }
 
       static calculateAdjustment(currentQuantity, requiredQuantity) {
@@ -262,7 +286,8 @@
         // отстающих от целевой доли.
         const salesTotal = rawAnalysis.reduce((sum, { asset, requiredQuantity }) => {
           const adjustment = this.calculateAdjustment(asset.quantity, requiredQuantity);
-          return adjustment < 0 ? sum + Math.abs(adjustment) * asset.price : sum;
+          // Корректировка выражена в лотах; выручка = лоты * штук в лоте * цена за штуку
+          return adjustment < 0 ? sum + Math.abs(adjustment) * this.getLotSize(asset) * asset.price : sum;
         }, 0);
 
         // Бюджет докупки = доступные деньги + выручка от продаж.
@@ -276,12 +301,13 @@
           let finalRequiredQuantity = requiredQuantity;
 
           if (adjustment > 0 && availableBudget != null) {
-            const desiredCost = adjustment * asset.price;
+            const desiredCost = adjustment * this.getLotSize(asset) * asset.price;
             if (desiredCost > budget) {
-              const affordableQuantity = this.floorQuantity(budget / asset.price);
+              // Лимит бюджета: сколько целых лотов можно купить на оставшийся бюджет
+              const affordableQuantity = this.floorQuantity(budget / (this.getLotSize(asset) * asset.price));
               finalAdjustment = affordableQuantity;
               finalRequiredQuantity = asset.quantity + affordableQuantity;
-              const spent = this.floorMoney(affordableQuantity * asset.price);
+              const spent = this.floorMoney(affordableQuantity * this.getLotSize(asset) * asset.price);
               budget -= spent;
               cashSpent += spent;
             } else {
@@ -293,11 +319,11 @@
 
           return {
             ...asset,
-            currentValue: asset.quantity * asset.price,
+            currentValue: asset.quantity * this.getLotSize(asset) * asset.price,
             currentPercent,
             requiredQuantity: finalRequiredQuantity,
             adjustment: finalAdjustment,
-            adjustmentValue: this.floorMoney(finalAdjustment * asset.price),
+            adjustmentValue: this.floorMoney(finalAdjustment * this.getLotSize(asset) * asset.price),
             isOverweight: currentPercent > asset.targetPercent,
             isUnderweight: currentPercent < asset.targetPercent,
           };
@@ -376,35 +402,61 @@
             const mi = cols.indexOf('MARKETPRICE');
             const lci = cols.indexOf('LCLOSEPRICE');
             if (bi === -1 || li === -1) continue;
+            // Оборачивает цену за штуку и размер лота (LOTSIZE) для найденной доски
+            const buildResult = (price, boardId) => ({
+              price: parseFloat(price),
+              lotSize: this.extractLotSize(data, boardId),
+            });
             for (const b of this.BOARD_PRIORITY) {
               const r = marketdata.data.find(r => r[bi] === b);
               if (!r) continue;
-              if (r[li] && parseFloat(r[li]) > 0) return parseFloat(r[li]);
-              if (mi !== -1 && r[mi] && parseFloat(r[mi]) > 0) return parseFloat(r[mi]);
-              if (lci !== -1 && r[lci] && parseFloat(r[lci]) > 0) return parseFloat(r[lci]);
+              if (r[li] && parseFloat(r[li]) > 0) return buildResult(r[li], b);
+              if (mi !== -1 && r[mi] && parseFloat(r[mi]) > 0) return buildResult(r[mi], b);
+              if (lci !== -1 && r[lci] && parseFloat(r[lci]) > 0) return buildResult(r[lci], b);
             }
             for (const r of marketdata.data) {
-              if (r[li] && parseFloat(r[li]) > 0) return parseFloat(r[li]);
-              if (mi !== -1 && r[mi] && parseFloat(r[mi]) > 0) return parseFloat(r[mi]);
-              if (lci !== -1 && r[lci] && parseFloat(r[lci]) > 0) return parseFloat(r[lci]);
+              if (r[li] && parseFloat(r[li]) > 0) return buildResult(r[li], r[bi]);
+              if (mi !== -1 && r[mi] && parseFloat(r[mi]) > 0) return buildResult(r[mi], r[bi]);
+              if (lci !== -1 && r[lci] && parseFloat(r[lci]) > 0) return buildResult(r[lci], r[bi]);
             }
             if (securities?.data?.length) {
               const sc = securities.columns;
               const pi = sc.indexOf('PREVPRICE');
-              if (pi !== -1) for (const r of securities.data) if (r[pi] && parseFloat(r[pi]) > 0) return parseFloat(r[pi]);
+              if (pi !== -1) for (const r of securities.data) if (r[pi] && parseFloat(r[pi]) > 0) return buildResult(r[pi], r[bi]);
             }
           } catch (err) { lastError = err; }
         }
         throw lastError || new Error(`Актив "${tickerUpper}" не найден на Мосбирже`);
       }
 
+      /**
+       * Извлечение размера лота (LOTSIZE) из блока securities ответа ISS API.
+       * LOTSIZE — количество штук актива в одном лоте.
+       * @param {Object} data - Распарсенный JSON-ответ ISS API
+       * @param {string} boardId - Код доски (BOARDID), для которой ищем лот
+       * @returns {number|null} Размер лота (>= 1) или null, если определить не удалось
+       */
+      static extractLotSize(data, boardId) {
+        const securities = data && data.securities;
+        if (!securities?.data?.length) return null;
+        const cols = securities.columns;
+        const bi = cols.indexOf('BOARDID');
+        const li = cols.indexOf('LOTSIZE');
+        if (bi === -1 || li === -1) return null;
+        // Приоритет — строка искомой доски; иначе берём первую строку с данными
+        const row = securities.data.find(r => r[bi] === boardId) || securities.data[0];
+        const v = row && row[li];
+        return v != null && parseFloat(v) > 0 ? Math.floor(parseFloat(v)) : null;
+      }
+
       static async fetchPrices(tickers) {
         const results = await Promise.allSettled(tickers.map(t => this.fetchPrice(t)));
-        const prices = results.map(r => r.status === 'fulfilled' ? r.value : null);
+        const prices = results.map(r => r.status === 'fulfilled' ? r.value.price : null);
+        const lotSizes = results.map(r => r.status === 'fulfilled' ? r.value.lotSize : null);
         const errors = tickers
           .map((t, i) => results[i].status === 'rejected' ? `${t}: ${results[i].reason.message}` : null)
           .filter(Boolean);
-        return { prices, errors };
+        return { prices, lotSizes, errors };
       }
     }
 
@@ -418,6 +470,7 @@
       static validate(asset, requireGroup = false) {
         const errors = [];
         if (asset.quantity < 0) errors.push('Количество не может быть отрицательным');
+        if (asset.lotSize != null && asset.lotSize < 1) errors.push('Лот не может быть меньше 1');
         if (asset.price < 0) errors.push('Цена не может быть отрицательной');
         if (asset.targetPercent < 0 || asset.targetPercent > 100) errors.push('Целевой процент должен быть от 0 до 100');
         if (requireGroup && asset.groupId == null) errors.push('Выберите группу для актива');
@@ -714,6 +767,11 @@
             <NumericInput value={asset.quantity} onChange={(val) => { onUpdate({ ...asset, quantity: val }); if (onQuantityChanged) onQuantityChanged(asset.id); }} isInteger
               className="w-20 px-2 py-1 border border-slate-300 rounded text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="0" />
           </td>
+          {/* Лот — сколько штук в одном лоте (авто из API, доступно для ручной правки) */}
+          <td className="px-2 sm:px-4 py-3">
+            <NumericInput value={asset.lotSize} onChange={(val) => onUpdate({ ...asset, lotSize: val })} isInteger
+              className="w-16 px-2 py-1 border border-slate-300 rounded text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="1" />
+          </td>
           <td className="px-2 sm:px-4 py-3 text-right font-mono">
             <NumericInput value={asset.price} onChange={(val) => onUpdate({ ...asset, price: val })} disabled={isLoading}
               className="w-24 ml-auto px-2 py-1 border border-slate-300 rounded text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100" placeholder="0.00" />
@@ -773,6 +831,7 @@
             <th className="px-2 sm:px-4 py-3 text-left text-sm font-semibold">Актив</th>
             {useGroups && <th className="px-2 sm:px-4 py-3 text-left text-sm font-semibold">Группа</th>}
             <th className="px-2 sm:px-4 py-3 text-left text-sm font-semibold">Кол-во</th>
+            <th className="px-2 sm:px-4 py-3 text-left text-sm font-semibold">Лот</th>
             <th className="px-2 sm:px-4 py-3 text-right text-sm font-semibold">Цена</th>
             <th className="px-2 sm:px-4 py-3 text-right text-sm font-semibold">Сумма</th>
             <th className="px-2 sm:px-4 py-3 text-left text-sm font-semibold">Цель %</th>
@@ -1126,6 +1185,25 @@
     }
 
     /**
+     * Нормализация одного актива: гарантирует наличие целочисленного lotSize >= 1.
+     * Нужна для обратной совместимости со старыми сохранёнными/импортированными
+     * данными, где поле lotSize могло отсутствовать.
+     * @param {Object} asset - Данные актива
+     * @returns {Object} Актив с гарантированным lotSize (>= 1)
+     */
+    const normalizeAsset = (asset) => {
+      const lot = Number(asset && asset.lotSize);
+      return { ...asset, lotSize: Number.isFinite(lot) && lot >= 1 ? Math.floor(lot) : 1 };
+    };
+
+    /**
+     * Нормализация массива активов (см. normalizeAsset).
+     * @param {Array} assets - Массив активов
+     * @returns {Array} Массив с гарантированным lotSize у каждого актива
+     */
+    const normalizeAssets = (assets) => (Array.isArray(assets) ? assets.map(normalizeAsset) : []);
+
+    /**
      * Главный компонент приложения — Orchestrator.
      */
     function PortfolioRebalancer() {
@@ -1134,7 +1212,7 @@
       // ========================================================================
 
       const savedData = useMemo(() => PortfolioStorage.load(), []);
-      const [assets, setAssets] = useState(() => savedData?.assets || []);
+      const [assets, setAssets] = useState(() => normalizeAssets(savedData?.assets || []));
 
       const [loading, setLoading] = useState(false);
       const [error, setError] = useState(null);
@@ -1201,7 +1279,7 @@
         setAssets(prevAssets => {
           const oldAsset = prevAssets.find(a => a.id === updatedAsset.id);
           const updated = prevAssets.map(a => a.id === updatedAsset.id ? updatedAsset : a);
-          if (oldAsset && (oldAsset.ticker !== updatedAsset.ticker || oldAsset.targetPercent !== updatedAsset.targetPercent || oldAsset.groupId !== updatedAsset.groupId)) {
+          if (oldAsset && (oldAsset.ticker !== updatedAsset.ticker || oldAsset.targetPercent !== updatedAsset.targetPercent || oldAsset.groupId !== updatedAsset.groupId || oldAsset.lotSize !== updatedAsset.lotSize)) {
             setTimeout(() => resetCalculation(), 0);
           }
           return updated;
@@ -1211,7 +1289,7 @@
 
       const handleAddAsset = useCallback(() => {
         setNextId(prev => prev + 1);
-        setAssets(prevAssets => [...prevAssets, { id: nextId, ticker: '', quantity: 0, price: 0, targetPercent: 0, groupId: null }]);
+        setAssets(prevAssets => [...prevAssets, { id: nextId, ticker: '', quantity: 0, price: 0, targetPercent: 0, groupId: null, lotSize: 1 }]);
         setError(null);
         resetCalculation();
       }, [nextId, resetCalculation]);
@@ -1228,9 +1306,12 @@
         try {
           const tickers = assets.map(a => a.ticker).filter(t => t);
           if (tickers.length === 0) { setLoading(false); return; }
-          const { prices, errors } = await MoexPriceService.fetchPrices(tickers);
+          const { prices, lotSizes, errors } = await MoexPriceService.fetchPrices(tickers);
           setAssets(prevAssets => prevAssets.map((asset, index) => ({
-            ...asset, price: prices[index] !== null ? prices[index] : asset.price,
+            ...asset,
+            price: prices[index] !== null ? prices[index] : asset.price,
+            // Автоопределение лотности из API; если API не отдало лот — оставляем прежнее значение
+            lotSize: lotSizes[index] != null && lotSizes[index] >= 1 ? lotSizes[index] : (asset.lotSize || 1),
           })));
           if (errors.length > 0) setError(`Не удалось загрузить: ${errors.join('; ')}`);
           resetCalculation();
@@ -1389,7 +1470,7 @@
         if (!file) return;
         try {
           const data = await PortfolioStorage.importFromFile(file);
-          setAssets(data.assets);
+          setAssets(normalizeAssets(data.assets));
           setNextId(data.nextId);
           if (data.cashBalance != null) setCashBalance(data.cashBalance);
           setUseGroups(data.useGroups ?? false);

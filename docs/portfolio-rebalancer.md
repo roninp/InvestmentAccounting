@@ -286,13 +286,23 @@
 |-------|-----------|------------|----------|
 | `floorMoney` | `value` | `number` | Округление денег строго вниз до сотых |
 | `floorQuantity` | `value` | `number` | Округление количества строго вниз до целого |
-| `calculateTotalValue` | `assets` | `number` | Сумма `quantity * price` по всем активам |
+| `getLotSize` | `asset` | `number` | Размер лота актива (целое, >= 1; по умолчанию 1) |
+| `floorToLot` | `value, lotSize` | `number` | Округление количества (в штуках) вниз до целого числа лотов |
+| `calculateTotalValue` | `assets` | `number` | Сумма `quantity × lotSize × price` по всем активам |
 | `calculatePercentages` | `assets` | `number[]` | Процент каждого актива от общей стоимости |
-| `calculateRequiredQuantity` | `asset, targetPercent, totalValue` | `number` | Сколько нужно актива для целевого процента (с округлением вниз) |
-| `calculateAdjustment` | `currentQuantity, requiredQuantity` | `number` | Разница между текущим и требуемым |
+| `calculateRequiredQuantity` | `asset, targetPercent, totalValue` | `number` | Сколько **ЛОТОВ** актива нужно для целевого процента (округление вниз до целого лота) |
+| `calculateAdjustment` | `currentQuantity, requiredQuantity` | `number` | Разница между текущим и требуемым количеством (в лотах) |
 | `distributeGroupTargets` | `groupAssets, emptyTargetIds` | `Object[]` | Распределение целевых процентов внутри одной группы |
 | `distributeTargets` | `assets, emptyTargetIds?, groups?` | `Object[]` | Распределение целевых процентов поровну. В режиме групп — независимо в рамках каждой группы |
 | `analyzePortfolio` | `assets, effectiveTotalValue, availableBudget?, groups?` | `{analysis, cashSpent}` | Полный анализ портфеля с ограничением бюджета. В режиме групп эффективная стоимость распределяется по группам пропорционально их долям |
+
+**Модель актива и лотность:** актив описывается полями `ticker`, `quantity`, `lotSize`, `price`, `targetPercent`, `groupId`. Здесь:
+- `quantity` — количество **ЛОТОВ** (целое, >= 0);
+- `lotSize` — сколько **штук** актива в одном лоте (целое, >= 1, по умолчанию 1);
+- `price` — цена за одну **штуку**;
+- стоимость актива = `quantity × lotSize × price`.
+
+Активы торгуются лотами (минимум 1 лот), поэтому все расчётные объёмы («Требуется», «Купить/Продать») выражаются в **лотах** и кратны лоту (округление строго вниз). Лотность определяется автоматически из ISS API (поле `LOTSIZE`) при загрузке цены, но пользователь может отредактировать поле «Лот» вручную. Для обратной совместимости у старых сохранённых/импортированных активов без `lotSize` он нормализуется к 1.
 
 ### `MoexPriceService`
 Сервис получения цен через ISS API Мосбиржи (акции, ETF, облигации, foreign shares, депозитарные расписки).
