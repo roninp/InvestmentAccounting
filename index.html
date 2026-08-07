@@ -670,7 +670,7 @@
        * Стили колонки «Текущий %» по отклонению актива от целевой доли.
        * Отстаёт (нужно докупить) — фон #FEF2F2, текст #BA1C1D;
        * опережает (нужно продать) — фон #F0FDF4, текст #298049;
-       * баланс — как у отстающего актива.
+       * баланс (текущий = целевой) — фон #dbeafe, текст #557ce3.
        * @param {number} current - Текущий процент актива
        * @param {number} target - Целевой процент актива
        * @returns {Object} Inline-стили { backgroundColor, color }
@@ -678,7 +678,7 @@
       const getPercentageColor = (current, target) => {
         if (current < target) return { backgroundColor: '#FEF2F2', color: '#BA1C1D' };
         if (current > target) return { backgroundColor: '#F0FDF4', color: '#298049' };
-        return { backgroundColor: '#FEF2F2', color: '#BA1C1D' };
+        return { backgroundColor: '#dbeafe', color: '#557ce3' };
       };
       const delayClass = animate ? `animate-delay-${Math.min(animateDelay + 1, 10)}` : '';
       // Цвет группы для визуального выделения строки (hex-строка)
@@ -870,7 +870,11 @@
                 : isOverweight
                   ? { color: '#BA1C1D' }
                   : { color: '#298049' };
+              // Знак отклонения: отстающая группа — только '+', опережающая — '-',
+              // баланс — без знака. Для отстающей берём модуль diff, чтобы
+              // не отображать двойной знак вида '+-0.11%'.
               const diffSign = isUnderweight ? '+' : isOverweight ? '-' : '';
+              const diffValue = isUnderweight ? Math.abs(item.diff) : item.diff;
               return (
                 <div key={item.id} className="flex items-center gap-3">
                   <span className="inline-block w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: item.color }} />
@@ -885,10 +889,10 @@
                   </div>
                   <div className="text-right flex-shrink-0">
                     <div className="inline-block px-2 py-0.5 rounded text-sm font-medium" style={percentStyle}>
-                      {item.currentPercent.toFixed(2)}% <span className="text-xs opacity-60">/ {item.targetPercent.toFixed(2)}%</span>
+                      {item.currentPercent.toFixed(2)}% <span className="text-xs" style={{ color: '#557ce3' }}>/ {item.targetPercent.toFixed(2)}%</span>
                     </div>
                     <div className="text-xs font-medium" style={diffStyle}>
-                      {diffSign}{item.diff.toFixed(2)}%
+                      {diffSign}{diffValue.toFixed(2)}%
                     </div>
                   </div>
                 </div>
