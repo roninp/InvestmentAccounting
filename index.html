@@ -106,6 +106,34 @@
         return Math.floor(value / lot);
       }
 
+      /**
+       * Количество знаков после запятой у цены актива (точность цены за 1 штуку).
+       * Используется для отображения цены за 1 лот с той же точностью.
+       * @param {number} price - Цена актива за 1 штуку
+       * @returns {number} Количество знаков после запятой (>= 0)
+       */
+      static getPriceDecimals(price) {
+        const text = String(price);
+        const dotIndex = text.indexOf('.');
+        return dotIndex === -1 ? 0 : text.length - dotIndex - 1;
+      }
+
+      /**
+       * Округление строго вверх до заданного числа знаков после запятой.
+       * Применяется к цене за 1 лот: цена за шт. × размер лота, округлённая вверх
+       * до точности цены актива (число знаков как у цены за 1 штуку).
+       * @param {number} value - Исходное значение (цена за лот)
+       * @param {number} decimals - Точность (количество знаков после запятой)
+       * @returns {number} Значение, округлённое строго вверх до decimals знаков
+       */
+      static roundUpToDecimals(value, decimals) {
+        const factor = Math.pow(10, decimals);
+        // Небольшой эпсилон компенсирует погрешность двоичных дробей
+        // (например, 0.29 * 100 = 28.999999999999996), не влияя на «строго вверх»
+        // для реальных цен, у которых количество знаков фиксировано.
+        return Math.ceil(value * factor - 1e-9) / factor;
+      }
+
       static calculateTotalValue(assets) {
         // quantity хранится в ЛОТАХ: стоимость = лоты * штук в лоте * цена за штуку
         return assets.reduce((sum, asset) => sum + (asset.quantity * this.getLotSize(asset) * asset.price), 0);
@@ -738,6 +766,9 @@
       const groupColorHex = useGroups ? getGroupColor(asset.groupId, groups) : null;
       // Фон строки — цвет группы с 10% прозрачностью (hex + '1A')
       const rowStyle = groupColorHex ? { backgroundColor: groupColorHex + '1A' } : undefined;
+      // Цена за 1 лот: точность совпадает с точностью цены за 1 штуку, округление строго вверх
+      const priceDecimals = PortfolioCalculator.getPriceDecimals(asset.price);
+      const lotPrice = PortfolioCalculator.roundUpToDecimals(PortfolioCalculator.getLotSize(asset) * asset.price, priceDecimals);
 
       return (
         <tr className={`border-b border-slate-200 hover:bg-slate-50 transition-colors ${animate ? `animate-fade-in ${delayClass}` : ''}`} style={rowStyle}>
@@ -767,14 +798,15 @@
             <NumericInput value={asset.quantity} onChange={(val) => { onUpdate({ ...asset, quantity: val }); if (onQuantityChanged) onQuantityChanged(asset.id); }} isInteger
               className="w-20 px-2 py-1 border border-slate-300 rounded text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="0" />
           </td>
-          {/* Лот — сколько штук в одном лоте (авто из API, доступно для ручной правки) */}
-          <td className="px-2 sm:px-4 py-3">
-            <NumericInput value={asset.lotSize} onChange={(val) => onUpdate({ ...asset, lotSize: val })} isInteger
-              className="w-16 px-2 py-1 border border-slate-300 rounded text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500" placeholder="1" />
-          </td>
-          <td className="px-2 sm:px-4 py-3 text-right font-mono">
-            <NumericInput value={asset.price} onChange={(val) => onUpdate({ ...asset, price: val })} disabled={isLoading}
-              className="w-24 ml-auto px-2 py-1 border border-slate-300 rounded text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100" placeholder="0.00" />
+          {/* Цена за шт./лот — редактируемая цена за 1 штуку, рядом через «/» цена за 1 лот (цена за шт. × размер лота; округление строго вверх до точности цены за 1 шт.) */}
+          <td className="px-2 sm:px-4 py-3 text-right font-mono whitespace-nowrap">
+            <div className="flex items-center justify-end gap-1.5">
+              <NumericInput value={asset.price} onChange={(val) => onUpdate({ ...asset, price: val })} disabled={isLoading}
+                className="w-20 px-2 py-1 border border-slate-300 rounded text-sm text-right focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100" placeholder="0.00" />
+              <span className="text-slate-500 text-xs">
+                / {lotPrice.toFixed(priceDecimals)}
+              </span>
+            </div>
           </td>
           <td className="px-2 sm:px-4 py-3 text-right font-mono text-slate-900 font-medium">
             {analysis ? `${analysis.currentValue.toFixed(2)} ₽` : '—'}
@@ -831,8 +863,7 @@
             <th className="px-2 sm:px-4 py-3 text-left text-sm font-semibold">Актив</th>
             {useGroups && <th className="px-2 sm:px-4 py-3 text-left text-sm font-semibold">Группа</th>}
             <th className="px-2 sm:px-4 py-3 text-left text-sm font-semibold">Кол-во</th>
-            <th className="px-2 sm:px-4 py-3 text-left text-sm font-semibold">Лот</th>
-            <th className="px-2 sm:px-4 py-3 text-right text-sm font-semibold">Цена</th>
+            <th className="px-2 sm:px-4 py-3 text-right text-sm font-semibold">Цена за шт./лот</th>
             <th className="px-2 sm:px-4 py-3 text-right text-sm font-semibold">Сумма</th>
             <th className="px-2 sm:px-4 py-3 text-left text-sm font-semibold">Цель %</th>
             <th className="px-2 sm:px-4 py-3 text-center text-sm font-semibold">Текущий %</th>
@@ -857,13 +888,16 @@
     }
 
     /**
-     * Сводка портфеля — две карточки: Стоимость активов и Деньги.
+     * Сводка портфеля — три карточки: Стоимость активов, Деньги и Стоимость портфеля.
      */
     function PortfolioSummary({ analysis, cashBalance, onCashBalanceChange, additionalCash, onAdditionalCashChange, onAddCash }) {
       const totalValue = PortfolioCalculator.calculateTotalValue(analysis);
+      // Стоимость портфеля = стоимость активов + остаток денежных средств (cashBalance).
+      // additionalCash (ещё не добавленная сумма) не включается — она ещё не внесена в портфель.
+      const portfolioValue = PortfolioCalculator.floorMoney(totalValue + cashBalance);
 
       return (
-        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 mb-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
           <div className="bg-gradient-to-br from-blue-50 to-blue-100 rounded-lg p-4 border border-blue-200">
             <div className="text-sm text-blue-600 font-medium mb-1">Стоимость активов</div>
             <div className="text-2xl font-bold text-blue-900">{totalValue.toFixed(2)} ₽</div>
@@ -878,6 +912,11 @@
               <button onClick={onAddCash} disabled={additionalCash <= 0}
                 className="px-3 py-1 bg-amber-600 text-white rounded text-sm hover:bg-amber-700 disabled:bg-amber-300 disabled:cursor-not-allowed transition-colors font-medium">➕ Добавить</button>
             </div>
+          </div>
+          {/* Стоимость портфеля — сумма активов и денежных средств */}
+          <div className="bg-gradient-to-br from-emerald-50 to-emerald-100 rounded-lg p-4 border border-emerald-200">
+            <div className="text-sm text-emerald-600 font-medium mb-1">Стоимость портфеля</div>
+            <div className="text-2xl font-bold text-emerald-900">{portfolioValue.toFixed(2)} ₽</div>
           </div>
         </div>
       );
