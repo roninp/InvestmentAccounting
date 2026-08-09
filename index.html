@@ -281,7 +281,7 @@
        * @param {number} effectiveTotalValue - Эффективная стоимость портфеля
        * @param {number} [availableBudget] - Доступный бюджет на докупку
        * @param {Array|null} [groups] - Массив групп [{ id, name, percent }]
-       * @returns {{ analysis: Array, cashSpent: number }}
+       * @returns {{ analysis: Array, cashSpent: number, salesTotal: number }}
        */
       static analyzePortfolio(assets, effectiveTotalValue = 0, availableBudget, groups = null) {
         const currentPercentages = this.calculatePercentages(assets, groups);
@@ -311,15 +311,15 @@
 
         // Выручка от продажи активов (adjustment < 0) — добавляется к бюджету
         // докупки, чтобы деньги от продаж использовались для покупки активов,
-        // отстающих от целевой доли.
+        // отстающих от целевой доли. Каждая продажа округляется вниз до копеек,
+        // чтобы дробные копейки не порождали расхождений с остатком денег.
         const salesTotal = rawAnalysis.reduce((sum, { asset, requiredQuantity }) => {
           const adjustment = this.calculateAdjustment(asset.quantity, requiredQuantity);
           // Корректировка выражена в лотах; выручка = лоты * штук в лоте * цена за штуку
-          return adjustment < 0 ? sum + Math.abs(adjustment) * this.getLotSize(asset) * asset.price : sum;
+          return adjustment < 0 ? sum + this.floorMoney(Math.abs(adjustment) * this.getLotSize(asset) * asset.price) : sum;
         }, 0);
 
         // Бюджет докупки = доступные деньги + выручка от продаж.
-        // cashSpent — нетто-эффект на остаток: покупки минус выручка от продаж.
         let budget = availableBudget != null ? availableBudget + salesTotal : Infinity;
         let cashSpent = 0;
 
@@ -357,10 +357,11 @@
           };
         });
 
-        // Возвращаем нетто-эффект: потраченные на покупки деньги за вычетом
-        // выручки от продаж (если продажи больше покупок — значение отрицательное,
-        // остаток на счету увеличивается).
-        return { analysis, cashSpent: this.floorMoney(cashSpent - salesTotal) };
+        // Возвращаем раздельно: потраченное на покупки (каждая покупка уже округлена
+        // вниз до копеек) и выручку от продаж (тоже в копейках). Итоговый остаток денег
+        // handleCalculate вычисляет в целых копейках — это исключает «виртуальную»
+        // копейку, возникавшую при повторном округлении разности покупок и продаж.
+        return { analysis, cashSpent, salesTotal };
       }
     }
 
@@ -733,6 +734,7 @@
      * @param {Function} props.onDistributeEvenly - Колбэк распределения целей поровну
      * @param {Function} props.onTargetEmptyChange - Колбэк пустоты поля «Цель»
      * @param {Function} props.onQuantityChanged - Колбэк изменения количества
+     * @param {Function} props.onApplyAdjustment - Колбэк применения одиночной корректировки (assetId, requiredQuantity, adjustmentValue)
      * @param {boolean} props.isLoading - Флаг загрузки
      * @param {boolean} props.isLastAsset - Флаг единственного актива
      * @param {boolean} props.animate - Флаг анимации
@@ -741,7 +743,7 @@
      * @param {boolean} props.useGroups - Включены ли группы
      * @param {Array} props.groups - Массив групп [{ id, name, percent }]
      */
-    function AssetRow({ asset, analysis, onUpdate, onRemove, onDistributeEvenly, onTargetEmptyChange, onQuantityChanged, isLoading, isLastAsset, animate, animateDelay, isAdjustmentActive, useGroups, groups }) {
+    function AssetRow({ asset, analysis, onUpdate, onRemove, onDistributeEvenly, onTargetEmptyChange, onQuantityChanged, onApplyAdjustment, isLoading, isLastAsset, animate, animateDelay, isAdjustmentActive, useGroups, groups }) {
       const getAdjustmentColor = (adj) => {
         if (adj > 0.1) return 'text-green-600 bg-green-50';
         if (adj < -0.1) return 'text-red-600 bg-red-50';
@@ -836,7 +838,7 @@
                   <div>{analysis.adjustment > 0 ? '+' : ''}{Math.round(analysis.adjustment)}</div>
                   <div className="text-xs mt-1">{analysis.adjustmentValue > 0 ? '+' : ''}{analysis.adjustmentValue.toFixed(2)} ₽</div>
                 </div>
-                <button onClick={() => { onUpdate({ ...asset, quantity: Math.round(analysis.requiredQuantity) }); if (onQuantityChanged) onQuantityChanged(asset.id); }}
+                <button onClick={() => onApplyAdjustment(asset.id, analysis.requiredQuantity, analysis.adjustmentValue)}
                   className="p-1.5 rounded-full bg-blue-100 text-blue-700 hover:bg-blue-200 transition-colors flex-shrink-0" title="Применить требуемое количество">⬇</button>
               </div>
             ) : <div className="text-slate-400">—</div>}
@@ -890,11 +892,18 @@
     /**
      * Сводка портфеля — три карточки: Стоимость активов, Деньги и Стоимость портфеля.
      */
-    function PortfolioSummary({ analysis, cashBalance, onCashBalanceChange, additionalCash, onAdditionalCashChange, onAddCash }) {
-      const totalValue = PortfolioCalculator.calculateTotalValue(analysis);
-      // Стоимость портфеля = стоимость активов + остаток денежных средств (cashBalance).
-      // additionalCash (ещё не добавленная сумма) не включается — она ещё не внесена в портфель.
-      const portfolioValue = PortfolioCalculator.floorMoney(totalValue + cashBalance);
+    function PortfolioSummary({ analysis, assets, cashBalance, onCashBalanceChange, additionalCash, onAdditionalCashChange, onAddCash }) {
+      // До расчёта используем текущие активы, после расчёта — анализ (в котором данные актива).
+      const source = analysis.length > 0 ? analysis : assets;
+      // Считаем стоимость активов так же, как считались adjustmentValue при расчёте:
+      // каждая позиция отдельно floorMoney(qty × lotSize × price).
+      // После суммирования округляем до целых копеек — тот же float-дрейф при сложении.
+      const totalValueRaw = source.reduce((sum, a) =>
+        sum + PortfolioCalculator.floorMoney(a.quantity * PortfolioCalculator.getLotSize(a) * a.price), 0);
+      const totalValue = Math.round(totalValueRaw * 100) / 100;
+      // Стоимость портфеля = активы (в целых копейках) + деньги (в целых копейках).
+      // Сумма двух копеечно-округлённых величин всегда точна.
+      const portfolioValue = totalValue + cashBalance;
 
       return (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-6">
@@ -1269,6 +1278,11 @@
       /** Результат анализа после нажатия «Рассчитать» (с учётом бюджета) */
       const [calculatedAnalysis, setCalculatedAnalysis] = useState(null);
 
+      /** Сумма покупок (затраты) из последнего расчёта — для списания при «Применить» */
+      const [calculatedSpent, setCalculatedSpent] = useState(null);
+      /** Сумма выручки от продаж из последнего расчёта — для зачисления при «Применить» */
+      const [calculatedSales, setCalculatedSales] = useState(null);
+
       const [emptyTargetIds, setEmptyTargetIds] = useState(() => new Set());
 
       /** Идентификаторы активов, для которых колонка Купить/Продать активна (сброшена после расчёта, обнуляется при изменении количества) */
@@ -1306,7 +1320,7 @@
       // HELPERS
       // ========================================================================
 
-      const resetCalculation = useCallback(() => { setIsCalculated(false); setCalculatedAnalysis(null); }, []);
+      const resetCalculation = useCallback(() => { setIsCalculated(false); setCalculatedAnalysis(null); setCalculatedSpent(null); setCalculatedSales(null); }, []);
 
       // ========================================================================
       // HANDLERS
@@ -1381,12 +1395,16 @@
         const budget = cashBalance + additionalCash;
 
         setTimeout(() => {
-          const { analysis: rawAnalysis, cashSpent } = PortfolioCalculator.analyzePortfolio(assets, effectiveTotalValue, budget, useGroups ? groups : null);
-          setCashBalance(prev => {
-            const totalAvailable = prev + additionalCash;
-            return PortfolioCalculator.floorMoney(totalAvailable - cashSpent);
-          });
-          setAdditionalCash(0);
+          const { analysis: rawAnalysis, cashSpent, salesTotal } = PortfolioCalculator.analyzePortfolio(assets, effectiveTotalValue, budget, useGroups ? groups : null);
+          // Кеш не меняем при расчёте — сделки ещё не исполнены.
+          // additionalCash, если введён, прибавляем к кешу (эквивалент кнопки ➕).
+          if (additionalCash > 0) {
+            setCashBalance(prev => PortfolioCalculator.floorMoney(prev + additionalCash));
+            setAdditionalCash(0);
+          }
+          // Сохраняем суммы покупок и продаж для использования при «Применить ко всем»
+          setCalculatedSpent(cashSpent);
+          setCalculatedSales(salesTotal);
           setCalculatedAnalysis(rawAnalysis);
           setAppliedAdjustmentIds(new Set(assets.map(a => a.id)));
           setIsCalculated(true);
@@ -1410,6 +1428,25 @@
       const handleDistributeEvenly = useCallback(() => {
         setAssets(prevAssets => PortfolioCalculator.distributeTargets(prevAssets, emptyTargetIds, useGroups ? groups : null));
       }, [emptyTargetIds, useGroups, groups]);
+
+      /**
+        * Применяет корректировку для одного актива (⬇ в строке): обновляет количество и кеш.
+        * @param {number} assetId - ID актива
+        * @param {number} requiredQuantity - Требуемое количество
+        * @param {number} adjustmentValue - Стоимость корректировки (положительная = покупка/списание, отрицательная = продажа/зачисление)
+        */
+      const handleApplySingleAdjustment = useCallback((assetId, requiredQuantity, adjustmentValue) => {
+        setAssets(prevAssets => prevAssets.map(a =>
+          a.id === assetId ? { ...a, quantity: Math.round(requiredQuantity) } : a
+        ));
+        // Покупка списывает кеш, продажа зачисляет.
+        // adjustmentValue > 0 (покупка) → вычитаем; adjustmentValue < 0 (продажа) → прибавляем.
+        setCashBalance(prev => {
+          let newBalance = prev - adjustmentValue;  // знак учтён: −(+value)=−списание, −(−value)=+зачисление
+          return Math.floor(newBalance * 100) / 100;
+        });
+        handleQuantityChanged(assetId);
+      }, [handleQuantityChanged]);
 
       /**
        * Удаляет id актива из appliedAdjustmentIds при изменении количества.
@@ -1455,14 +1492,30 @@
        * Также деактивирует колонку «Купить/Продать» для всех активов.
        */
       const handleApplyAllAdjustments = useCallback(() => {
+        // Считаем сумму adjustmentValue только для активов, чьи корректировки ещё не применены.
+        // Это исключает двойной счёт, если часть позиций уже применена через ⬇.
+        const totalAdjustmentValue = calculatedAnalysis?.reduce((sum, a) => {
+          if (appliedAdjustmentIds.has(a.id)) return sum + a.adjustmentValue;
+          return sum;
+        }, 0) || 0;
+        // Округляем до целых копеек, чтобы float-дрейф при сложении многих adjustmentValue
+        // (.73 + .47 + ... и т.д.) не давал погрешность в 1 копейку.
+        const totalAdjustmentKopeks = Math.round(totalAdjustmentValue * 100) / 100;
+
+        // Применяем требуемые количества ко всем активам
         setAssets(prevAssets => prevAssets.map(a => {
           const aAnalysis = calculatedAnalysis?.find(an => an.id === a.id);
-          if (!aAnalysis) return a;
+          if (!aAnalysis || !appliedAdjustmentIds.has(a.id)) return a;
           return { ...a, quantity: Math.round(aAnalysis.requiredQuantity) };
         }));
+        // Обновляем кеш: adjustmentValue уже с правильным знаком (+покупка/−продажа)
+        setCashBalance(prev => {
+          let newBalance = prev - totalAdjustmentKopeks;
+          return Math.floor(newBalance * 100) / 100;
+        });
         setAppliedAdjustmentIds(new Set());
         resetCalculation();
-      }, [calculatedAnalysis, resetCalculation]);
+      }, [calculatedAnalysis, appliedAdjustmentIds, resetCalculation]);
 
       /**
        * Удаление группы.
@@ -1534,6 +1587,8 @@
         setNextGroupId(1);
         setIsCalculated(false);
         setCalculatedAnalysis(null);
+        setCalculatedSpent(null);
+        setCalculatedSales(null);
         setEmptyTargetIds(new Set());
         setAppliedAdjustmentIds(new Set());
         setError(null);
@@ -1607,6 +1662,7 @@
           <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
             <PortfolioSummary
               analysis={analysis}
+              assets={assets}
               cashBalance={cashBalance}
               onCashBalanceChange={handleCashBalanceChange}
               additionalCash={additionalCash}
@@ -1642,6 +1698,7 @@
                           onDistributeEvenly={handleDistributeEvenly}
                           onTargetEmptyChange={handleTargetEmptyChange}
                           onQuantityChanged={handleQuantityChanged}
+                          onApplyAdjustment={handleApplySingleAdjustment}
                           isLoading={loading}
                           isLastAsset={assets.length <= 1}
                           animate={isCalculated}
