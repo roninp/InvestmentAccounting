@@ -58,6 +58,16 @@
     const { useState, useCallback, useMemo, useEffect, useRef } = React;
 
     // ============================================================================
+    // КОНСТАНТЫ ПРИЛОЖЕНИЯ
+    // ============================================================================
+
+    /** Адрес локального backend-прокси для T-Invest API (используется на тарифе «Про») */
+    const TBANK_PROXY_URL = 'http://localhost:8787';
+
+    /** Длительность cooldown кнопки «Обновить цены» (секунды) — применяется только на тарифе «Про» */
+    const PRICE_REFRESH_COOLDOWN_SECONDS = 60;
+
+    // ============================================================================
     // DOMAIN LAYER — Бизнес-логика, независимая от UI
     // ============================================================================
 
@@ -486,6 +496,38 @@
           .map((t, i) => results[i].status === 'rejected' ? `${t}: ${results[i].reason.message}` : null)
           .filter(Boolean);
         return { prices, lotSizes, errors };
+      }
+    }
+
+    /**
+     * Сервис получения цен через локальный backend-прокси T-Invest API.
+     * Используется на тарифе «Про» для мгновенного обновления цен без задержки.
+     * Прокси (server/index.js) скрывает от браузера gRPC-протокол и секретный
+     * токен T-Bank, отдавая простой JSON в том же формате, что и
+     * MoexPriceService.fetchPrices() — благодаря чему логика приёма цен
+     * на фронтенде остаётся прежней.
+     */
+    class TBankProxyPriceService {
+      /**
+       * Получить цены и размеры лотов нескольких активов через локальный прокси.
+       * @param {string[]} tickers - Массив тикеров
+       * @returns {Promise<{prices: (number|null)[], lotSizes: (number|null)[], errors: string[]}>}
+       * @throws {Error} Если прокси недоступен или вернул HTTP-ошибку
+       */
+      static async fetchPrices(tickers) {
+        const url = `${TBANK_PROXY_URL}/api/prices?tickers=${encodeURIComponent(tickers.join(','))}`;
+        const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
+        if (!response.ok) {
+          const text = await response.text().catch(() => '');
+          throw new Error(`Прокси T-Invest ответил ${response.status}: ${text}`);
+        }
+        const data = await response.json();
+        // Прокси возвращает поля, совместимые с MoexPriceService.fetchPrices()
+        return {
+          prices: data.prices ?? [],
+          lotSizes: data.lotSizes ?? [],
+          errors: data.errors ?? [],
+        };
       }
     }
 
@@ -1268,6 +1310,14 @@
 
       const [loading, setLoading] = useState(false);
       const [error, setError] = useState(null);
+      /** Информационная плашка о недоступности актуальных цен (фолбэк на источник с задержкой ~15 минут) */
+      const [notice, setNotice] = useState(null);
+
+      /** Оставшиеся секунды до разблокировки кнопки «Обновить цены» (0 — кнопка активна). Cooldown 60 с применяется только на тарифе «Про» */
+      const [priceRefreshCooldown, setPriceRefreshCooldown] = useState(0);
+      /** Ссылка на таймер обратного отсчёта cooldown (для очистки при размонтировании) */
+      const cooldownTimerRef = useRef(null);
+
       const [nextId, setNextId] = useState(() => savedData?.nextId ?? 1);
 
       /** Остаток свободных денежных средств */
@@ -1326,6 +1376,45 @@
 
       const resetCalculation = useCallback(() => { setIsCalculated(false); setCalculatedAnalysis(null); setCalculatedSpent(null); setCalculatedSales(null); }, []);
 
+      /**
+       * Запускает обратный отсчёт кнопки «Обновить цены» (посекундно) ТОЛЬКО на тарифе «Про».
+       * После обновления на «Про» следующее нажатие доступно не раньше, чем через
+       * PRICE_REFRESH_COOLDOWN_SECONDS секунд. На тарифах «Бесплатный» и «Базовый»
+       * cooldown нет — кнопку можно нажимать в любой момент.
+       * По окончании отсчёта кнопка снова становится активной.
+       */
+      const startPriceRefreshCooldown = useCallback(() => {
+        if (tier !== 'pro') return; // cooldown применяется только на тарифе «Про»
+        // Сбрасываем предыдущий таймер, если он ещё шёл
+        if (cooldownTimerRef.current) clearInterval(cooldownTimerRef.current);
+        setPriceRefreshCooldown(PRICE_REFRESH_COOLDOWN_SECONDS);
+        cooldownTimerRef.current = setInterval(() => {
+          setPriceRefreshCooldown(prev => {
+            if (prev <= 1) {
+              clearInterval(cooldownTimerRef.current);
+              cooldownTimerRef.current = null;
+              return 0;
+            }
+            return prev - 1;
+          });
+        }, 1000);
+      }, [tier]);
+
+      // Очистка таймера cooldown при размонтировании компонента
+      useEffect(() => () => {
+        if (cooldownTimerRef.current) clearInterval(cooldownTimerRef.current);
+      }, []);
+
+      // При смене тарифа с «Про» на другой отсчёт cooldown сбрасывается:
+      // обратный отсчёт 60 с применяется только на тарифе «Про»
+      useEffect(() => {
+        if (tier !== 'pro' && priceRefreshCooldown > 0) {
+          if (cooldownTimerRef.current) clearInterval(cooldownTimerRef.current);
+          cooldownTimerRef.current = null;
+          setPriceRefreshCooldown(0);
+        }
+      }, [tier, priceRefreshCooldown]);
+
       // ========================================================================
       // HANDLERS
       // ========================================================================
@@ -1360,21 +1449,55 @@
       const handleRefreshPrices = useCallback(async () => {
         setLoading(true);
         setError(null);
+        setNotice(null);
         try {
           const tickers = assets.map(a => a.ticker).filter(t => t);
           if (tickers.length === 0) { setLoading(false); return; }
-          const { prices, lotSizes, errors } = await MoexPriceService.fetchPrices(tickers);
+          // Тариф «Про»: пробуем мгновенное обновление через T-Invest API (прокси).
+          // Если цены получить не удалось — фолбэк на открытый источник ISS-API Мосбиржи
+          // (данные с задержкой ~15 минут) и информационная плашка об этом.
+          let fetched;
+          let usedFallback = false;
+          if (tier === 'pro') {
+            let tbankResult = null;
+            try {
+              tbankResult = await TBankProxyPriceService.fetchPrices(tickers);
+            } catch (err) {
+              tbankResult = null; // прокси недоступен / сетевой сбой / HTTP-ошибка
+            }
+            const hasTbankPrices = tbankResult &&
+              Array.isArray(tbankResult.prices) &&
+              tbankResult.prices.some(p => p != null);
+            if (hasTbankPrices) {
+              fetched = tbankResult;
+            } else {
+              usedFallback = true;
+              fetched = await MoexPriceService.fetchPrices(tickers);
+            }
+          } else {
+            // «Бесплатный» и «Базовый» всегда берут данные из ISS-API Мосбиржи
+            fetched = await MoexPriceService.fetchPrices(tickers);
+          }
+          const { prices, lotSizes, errors } = fetched;
           setAssets(prevAssets => prevAssets.map((asset, index) => ({
             ...asset,
-            price: prices[index] !== null ? prices[index] : asset.price,
+            price: prices[index] !== null && prices[index] !== undefined ? prices[index] : asset.price,
             // Автоопределение лотности из API; если API не отдало лот — оставляем прежнее значение
             lotSize: lotSizes[index] != null && lotSizes[index] >= 1 ? lotSizes[index] : (asset.lotSize || 1),
           })));
-          if (errors.length > 0) setError(`Не удалось загрузить: ${errors.join('; ')}`);
+          if (usedFallback) {
+            // При фолбэке детали ошибок (например, про токен) не показываем —
+            // только плашку о задержке данных.
+            setNotice('Актуальные цены недоступны, данные обновляются с задержкой 15 минут');
+          } else if (errors.length > 0) {
+            setError(`Не удалось загрузить: ${errors.join('; ')}`);
+          }
           resetCalculation();
+          // Следующее нажатие кнопки станет доступно через 60 секунд (только на тарифе «Про»)
+          startPriceRefreshCooldown();
         } catch (err) { setError(`Ошибка получения цен: ${err.message}`); }
         finally { setLoading(false); }
-      }, [assets, resetCalculation]);
+      }, [assets, resetCalculation, tier, startPriceRefreshCooldown]);
 
       /**
        * Прямое редактирование остатка денежных средств.
@@ -1679,6 +1802,9 @@
             {error && (
               <div className="mb-6 p-4 bg-red-50 border border-red-200 rounded-lg text-red-800 text-sm">⚠️ {error}</div>
             )}
+            {notice && (
+              <div className="mb-6 p-4 bg-amber-50 border border-amber-300 rounded-lg text-amber-800 text-sm">⏳ {notice}</div>
+            )}
 
             {useGroups && groups.length > 0 && (
               <GroupAllocations groups={groups} assets={assets} />
@@ -1745,9 +1871,12 @@
                 <span className={isCalculating ? 'animate-spin-calc' : ''}>{isCalculating ? '⏳' : isCalculated ? '✅' : '🧮'}</span>
                 {isCalculating ? 'Расчёт...' : isCalculated ? 'Рассчитано' : 'Рассчитать'}
               </button>
-              <button onClick={handleRefreshPrices} disabled={loading || assets.filter(a => a.ticker).length === 0}
-                className="flex items-center justify-center gap-2 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:bg-slate-400 disabled:cursor-not-allowed transition-colors font-medium w-full sm:w-auto">
-                🔄 {loading ? 'Загрузка...' : 'Обновить цены'}
+              <button onClick={handleRefreshPrices}
+                disabled={loading || assets.filter(a => a.ticker).length === 0 || priceRefreshCooldown > 0}
+                className={`flex items-center justify-center gap-2 px-4 py-2 rounded-lg disabled:cursor-not-allowed transition-colors font-medium w-full sm:w-auto ${
+                  priceRefreshCooldown > 0 ? 'bg-slate-400 text-white' : 'bg-blue-600 text-white hover:bg-blue-700'
+                }`}>
+                🔄 {loading ? 'Загрузка...' : priceRefreshCooldown > 0 ? `Обновить цены (${priceRefreshCooldown} с)` : 'Обновить цены'}
               </button>
               <button onClick={handleAddAsset} disabled={assets.length >= maxAssets}
                 className="flex items-center justify-center gap-2 px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:bg-slate-400 disabled:cursor-not-allowed transition-colors font-medium w-full sm:w-auto">
