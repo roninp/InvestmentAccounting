@@ -132,8 +132,8 @@ MoexPriceService.extractLotSize(data, boardId)
 4. Показывает ошибки для незагрузившихся активов
 
 > **Примечание:** на тарифе **Про** `handleRefreshPrices` использует источник
-> T-Invest API (локальный backend-прокси `server/index.js`) вместо Moex-ISS.
-> Подробнее — в `docs/tbank-proxy.md`.
+> Finam Trade API (локальный backend-прокси `server/index.js`) вместо Moex-ISS.
+> Подробнее — в `docs/finam-proxy.md`.
 
 ### Начальное состояние
 

@@ -61,7 +61,7 @@
     // КОНСТАНТЫ ПРИЛОЖЕНИЯ
     // ============================================================================
 
-    /** Адрес локального backend-прокси для T-Invest API (используется на тарифе «Про») */
+    /** Адрес локального backend-прокси для Finam Trade API (используется на тарифе «Про») */
     const TBANK_PROXY_URL = 'http://localhost:8787';
 
     /** Длительность cooldown кнопки «Обновить цены» (секунды) — применяется только на тарифе «Про» */
@@ -500,10 +500,10 @@
     }
 
     /**
-     * Сервис получения цен через локальный backend-прокси T-Invest API.
+     * Сервис получения цен через локальный backend-прокси Finam Trade API.
      * Используется на тарифе «Про» для мгновенного обновления цен без задержки.
-     * Прокси (server/index.js) скрывает от браузера gRPC-протокол и секретный
-     * токен T-Bank, отдавая простой JSON в том же формате, что и
+     * Прокси (server/index.js) скрывает от браузера секретный токен Finam и
+     * короткоживущий JWT, отдавая простой JSON в том же формате, что и
      * MoexPriceService.fetchPrices() — благодаря чему логика приёма цен
      * на фронтенде остаётся прежней.
      */
@@ -519,7 +519,7 @@
         const response = await fetch(url, { signal: AbortSignal.timeout(15000) });
         if (!response.ok) {
           const text = await response.text().catch(() => '');
-          throw new Error(`Прокси T-Invest ответил ${response.status}: ${text}`);
+          throw new Error(`Прокси Finam ответил ${response.status}: ${text}`);
         }
         const data = await response.json();
         // Прокси возвращает поля, совместимые с MoexPriceService.fetchPrices()
@@ -1453,7 +1453,7 @@
         try {
           const tickers = assets.map(a => a.ticker).filter(t => t);
           if (tickers.length === 0) { setLoading(false); return; }
-          // Тариф «Про»: пробуем мгновенное обновление через T-Invest API (прокси).
+          // Тариф «Про»: пробуем мгновенное обновление через Finam Trade API (прокси).
           // Если цены получить не удалось — фолбэк на открытый источник ISS-API Мосбиржи
           // (данные с задержкой ~15 минут) и информационная плашка об этом.
           let fetched;

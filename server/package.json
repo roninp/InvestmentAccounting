@@ -1,17 +1,16 @@
 {
-  "name": "tbank-invest-proxy",
+  "name": "finam-invest-proxy",
   "version": "1.0.0",
-  "description": "Backend-прокси для T-Invest API (тариф «Про»): мгновенное получение цен без задержки для frontend-приложения index.html",
+  "description": "Backend-прокси для Finam Trade API (тариф «Про»): мгновенное получение цен без задержки для frontend-приложения index.html",
   "main": "index.js",
   "private": true,
   "scripts": {
     "start": "node index.js"
   },
   "engines": {
-    "node": ">=16.0.0"
+    "node": ">=18.0.0"
   },
   "dependencies": {
-    "@tinkoff/invest-js": "^1.20.0",
     "dotenv": "^16.0.0",
     "express": "^4.18.0"
   }
