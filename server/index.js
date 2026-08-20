@@ -1,5 +1,5 @@
 /**
- * Backend-прокси для Finam Trade API (тариф «Про»).
+ * Backend-прокси Finam Trade API + раздача frontend — единый сервис (single origin).
  *
  * Назначение: предоставить frontend-приложению (index.html) обновление цен
  * в реальном времени (без задержки) через Finam Trade API
@@ -15,16 +15,24 @@
  *   4) отдаёт браузеру простой JSON в том же формате, что и MoexPriceService
  *      из index.html: { prices, lotSizes, errors }.
  *
- * Контракт с frontend НЕ менялся: index.html по-прежнему обращается к адресу,
- * заданному константой TBANK_PROXY_URL (сервер слушает тот же порт 8787),
- * поэтому вся остальная логика приложения работает как раньше.
+ * Единый origin (вариант 1): сервер раздаёт и саму страницу (index.html),
+ * и API (/api/prices, /health). Браузер обращается к API относительным URL,
+ * поэтому:
+ *   - не возникает запросов «разрешить доступ сайту к другим приложениям
+ *     на этом устройстве» (раньше index.html по ссылке-источнику обращался
+ *     на http://localhost:8787 другого origin);
+ *   - не нужны CORS-заголовки (same-origin);
+ *   - деплой на удалённый сервер работает «как есть»: посетитель получает
+ *     страницу и API с одного домена/порта.
  *
  * Запуск:
  *   cd server && npm install && npm start
+ *   Открыть приложение: http://localhost:8787/
  */
 
 require('dotenv').config();
 const express = require('express');
+const path = require('path');
 
 // ----------------------------------------------------------------------------
 // Константы / конфигурация
@@ -36,6 +44,8 @@ const FINAM_API_BASE = 'https://api.finam.ru';
 const FINAM_API_SECRET = (process.env.FINAM_API_SECRET || '').trim();
 /** Порт, на котором слушает прокси (настраивается через server/.env) */
 const PORT = Number(process.env.PORT) || 8787;
+/** Абсолютный путь к главной странице приложения (лежит в корне репозитория) */
+const FRONTEND_INDEX = path.join(__dirname, '..', 'index.html');
 /** Таймаут одного HTTP-запроса к Finam API (мс) */
 const FINAM_REQUEST_TIMEOUT_MS = 15000;
 /** JWT Finam живёт 15 минут; перевыпускаем заранее за 1 минуту до истечения */
@@ -68,15 +78,16 @@ if (process.env.FINAM_TLS_INSECURE === '1') {
 const app = express();
 
 // ----------------------------------------------------------------------------
-// CORS: разрешаем браузерному приложению (index.html) вызывать этот прокси
+// CORS
 // ----------------------------------------------------------------------------
-app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') return res.sendStatus(204);
-  next();
-});
+// CORS-заголовки не требуются: frontend (index.html) и API (/api/prices,
+// /health) раздаются одним сервером с одного origin. Это устраняет запрос
+// браузера «разрешить доступ сайту к другим приложениям на этом устройстве»,
+// который возникал, когда страница по внешней ссылке обращалась напрямую
+// к локальному серверу на http://localhost:8787.
+// Если в будущем понадобится вызывать API с другого origin (например, из
+// отдельного dev-сервера), нужно добавить осознанный CORS-миддлварь с явным
+// белым списком источников, а не «*».
 
 // ----------------------------------------------------------------------------
 // Управление JWT-токеном Finam Trade API
@@ -403,6 +414,15 @@ function friendlyError(err) {
 // ----------------------------------------------------------------------------
 
 /**
+ * Главная страница приложения (фронтенд).
+ * GET /
+ * Отдаёт index.html, после чего клиент вызывает /api/prices тем же origin.
+ */
+app.get('/', (req, res) => {
+  res.sendFile(FRONTEND_INDEX);
+});
+
+/**
  * Проверка работоспособности сервера.
  * GET /health
  */
@@ -448,6 +468,9 @@ app.get('/api/prices', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`Finam proxy запущен: http://localhost:${PORT}`);
+  console.log(`Сервис «Ребалансировка портфеля» запущен: http://localhost:${PORT}/`);
+  console.log(`  - фронтенд (index.html): /`);
+  console.log(`  - API цен: /api/prices`);
+  console.log(`  - проверка: /health`);
   console.log(`FINAM_API_SECRET: ${FINAM_API_SECRET ? 'задан ✓' : 'НЕ задан — обновите server/.env'}`);
 });
